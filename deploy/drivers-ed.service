@@ -1,0 +1,50 @@
+[Unit]
+Description=Needham Driving School lesson auto-claim bot
+Documentation=https://github.com/jaydenaleung/drivers-ed
+# Don't start before the network is up, or the first poll fails on every boot.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=driversed
+Group=driversed
+WorkingDirectory=/opt/drivers-ed
+
+# Secrets live here, owned by driversed and chmod 600. Never in the repo.
+EnvironmentFile=/opt/drivers-ed/.env
+
+ExecStart=/usr/bin/node /opt/drivers-ed/src/index.js
+
+# Restart on crash AND on clean exit — a bot that has quietly stopped is the
+# failure mode this whole design is trying to avoid (§11 item 6).
+Restart=always
+RestartSec=5
+
+# If it crash-loops more than 5 times in 60s, stop trying and leave it failed
+# so `systemctl status` shows the problem instead of hiding it in a loop.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=drivers-ed
+
+# --- hardening -------------------------------------------------------------
+# The bot needs: outbound HTTPS, its own directory, and nothing else.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+# ProtectSystem=strict makes everything read-only, so punch a hole for the
+# SQLite file and its WAL sidecars.
+ReadWritePaths=/opt/drivers-ed/data
+
+[Install]
+WantedBy=multi-user.target

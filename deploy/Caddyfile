@@ -1,0 +1,45 @@
+# Caddy config for the lesson bot dashboard.
+# Install to /etc/caddy/Caddyfile, then: sudo systemctl reload caddy
+#
+# Caddy gets and renews a Let's Encrypt certificate automatically. The only
+# prerequisite is that the domain below already points at this server's IP and
+# that ports 80 and 443 are open.
+
+# ---------------------------------------------------------------------------
+# OPTION A — you own a domain (recommended).
+# Replace bot.example.com with your actual subdomain.
+# ---------------------------------------------------------------------------
+bot.example.com {
+	encode zstd gzip
+
+	# The bot listens on loopback only, so Caddy is the sole way in.
+	reverse_proxy 127.0.0.1:8080
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		# The dashboard is self-contained — no external scripts, styles or images.
+		Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
+		-Server
+	}
+
+	# The health endpoint is unauthenticated by design (it exposes only a
+	# timestamp) so an uptime monitor can reach it. Everything else is behind
+	# the password gate in the app itself.
+	log {
+		output file /var/log/caddy/drivers-ed.log
+		format console
+	}
+}
+
+# ---------------------------------------------------------------------------
+# OPTION B — no domain yet. Caddy issues a self-signed cert for the bare IP.
+# Your browser will warn once; click through. Swap to Option A when you have a
+# domain. Replace 203.0.113.10 with your droplet's IP.
+# ---------------------------------------------------------------------------
+# https://203.0.113.10 {
+# 	tls internal
+# 	reverse_proxy 127.0.0.1:8080
+# }

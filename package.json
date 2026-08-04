@@ -1,0 +1,34 @@
+{
+  "name": "drivers-ed",
+  "version": "1.0.0",
+  "description": "Watches @NeedhamDriving on X for open-lesson posts and auto-claims matching ones by email.",
+  "type": "module",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test \"test/**/*.test.js\"",
+    "replay": "node src/tools/replay.js",
+    "parse": "node src/tools/parse-one.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jaydenaleung/drivers-ed.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/jaydenaleung/drivers-ed/issues"
+  },
+  "homepage": "https://github.com/jaydenaleung/drivers-ed#readme",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.115.0",
+    "better-sqlite3": "^13.0.1",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "nodemailer": "^9.0.3"
+  }
+}
