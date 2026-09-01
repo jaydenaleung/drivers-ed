@@ -21,6 +21,16 @@ const MONTHS = {
   dec: 12, december: 12,
 };
 
+const WEEKDAYS = {
+  sunday: 0, sun: 0,
+  monday: 1, mon: 1,
+  tuesday: 2, tue: 2, tues: 2,
+  wednesday: 3, wed: 3,
+  thursday: 4, thu: 4, thurs: 4,
+  friday: 5, fri: 5,
+  saturday: 6, sat: 6,
+};
+
 /** Current date in the given IANA timezone, as YYYY-MM-DD. */
 export function todayInTz(timezone, now = new Date()) {
   // en-CA formats as YYYY-MM-DD, which is exactly what we want.
@@ -38,6 +48,12 @@ export function addDays(dateStr, days) {
   const dt = new Date(Date.UTC(y, m - 1, d));
   dt.setUTCDate(dt.getUTCDate() + days);
   return dt.toISOString().slice(0, 10);
+}
+
+/** Day of week (0=Sunday) for a YYYY-MM-DD string. */
+export function dayOfWeek(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
 }
 
 export function isValidDate(dateStr) {
@@ -77,8 +93,14 @@ function inferYear(month, day, todayStr) {
 
 /**
  * Extracts a lesson date from free text.
- * Handles: "today", "tonight", "tomorrow", "July 27th", "Jul 27", "7/27",
- * "7/27/2026". Returns YYYY-MM-DD or null.
+ *
+ * Handles, in priority order: an explicit month name ("July 27th"), a numeric
+ * date ("8/29"), a weekday name ("Saturday" — resolved to the next such day on
+ * or after the post date), then "tomorrow", then "today".
+ *
+ * Weekday support matters: the school posts "Saturday lessons have been
+ * claimed!" with no date at all, and resolving that to the post's own date
+ * would clear the wrong day's lessons.
  */
 export function parseDateExpression(
   text,
@@ -91,8 +113,8 @@ export function parseDateExpression(
   const lower = text.toLowerCase();
 
   // An explicit calendar date always beats a relative word, because posts
-  // routinely say "Lesson Open Today July 27th" — both are present and the
-  // explicit one is unambiguous.
+  // routinely say "Lessons available on Saturday, 8/29" — several forms are
+  // present at once and the explicit one is unambiguous.
   const monthNames = Object.keys(MONTHS).join('|');
   const named = lower.match(
     new RegExp(`\\b(${monthNames})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(\\d{4}))?\\b`),
@@ -105,8 +127,8 @@ export function parseDateExpression(
     if (isValidDate(iso)) return iso;
   }
 
-  // Numeric: 7/27 or 7/27/2026 or 7-27-2026. Requires a separator that isn't
-  // part of a time range, so we demand a slash for the bare two-part form.
+  // Numeric: 8/29 or 8/29/2026. Requires a slash so a time range like "5-6"
+  // can never be mistaken for a date.
   const numeric = lower.match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/);
   if (numeric) {
     const month = Number(numeric[1]);
@@ -120,6 +142,16 @@ export function parseDateExpression(
     }
     const iso = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
     if (isValidDate(iso)) return iso;
+  }
+
+  // Weekday name -> the next such day on or after the post date.
+  const weekdayNames = Object.keys(WEEKDAYS).join('|');
+  const weekday = lower.match(new RegExp(`\\b(${weekdayNames})\\b`));
+  if (weekday) {
+    const target = WEEKDAYS[weekday[1]];
+    const current = dayOfWeek(today);
+    const delta = (target - current + 7) % 7;
+    return addDays(today, delta);
   }
 
   if (/\btomorrow\b/.test(lower)) return addDays(today, 1);
@@ -152,9 +184,14 @@ function guessMeridiem(hour) {
   return null; // already unambiguous (0, or 13-23)
 }
 
+function normaliseMeridiem(raw) {
+  if (!raw) return null;
+  return raw.toLowerCase().replace(/\./g, '').startsWith('p') ? 'pm' : 'am';
+}
+
 /**
  * Extracts a start/end time range from free text.
- * Handles "1-2 pm", "1:30-3pm", "10 am - 12 pm", "1 pm to 2 pm", "10-12".
+ * Handles "1-2 pm", "5-6 pm", "1:30-3pm", "10 am - 12 pm", "1 pm to 2 pm".
  * Returns { start, end } as HH:MM strings, or nulls.
  */
 export function parseTimeRange(text) {
@@ -173,9 +210,11 @@ export function parseTimeRange(text) {
   const endMin = Number(m[5] ?? 0);
   let endMer = normaliseMeridiem(m[6]);
 
-  if (startHour > 23 || endHour > 23 || startMin > 59 || endMin > 59) return { start: null, end: null };
+  if (startHour > 23 || endHour > 23 || startMin > 59 || endMin > 59) {
+    return { start: null, end: null };
+  }
 
-  // A trailing meridiem ("1-2 pm") governs both ends unless the start had its own.
+  // A trailing meridiem ("5-6 pm") governs both ends unless the start had its own.
   if (!endMer && startMer) endMer = startMer;
   if (!endMer) endMer = guessMeridiem(endHour);
   if (!startMer) startMer = endMer;
@@ -194,7 +233,7 @@ export function parseTimeRange(text) {
   return { start, end };
 }
 
-/** Fallback for posts that name only a start time ("Lesson open at 3pm"). */
+/** Fallback for text that names only a start time ("Lesson open at 3pm"). */
 function parseSingleTime(text) {
   const m = text.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)\b/i);
   if (!m) return { start: null, end: null };
@@ -206,9 +245,38 @@ function parseSingleTime(text) {
   return { start: to24(hour, minute, normaliseMeridiem(m[3])), end: null };
 }
 
-function normaliseMeridiem(raw) {
-  if (!raw) return null;
-  return raw.toLowerCase().replace(/\./g, '').startsWith('p') ? 'pm' : 'am';
+/**
+ * Extracts EVERY start time from a list like "8 am, 9 am, 10 am or 11 am" or
+ * "2 pm or 4 pm". Each one is a separate claimable lesson.
+ *
+ * Where a time omits its am/pm ("4, 5 or 6 pm") the meridiem is inherited from
+ * the next time that states one, since these lists run left to right within a
+ * single half of the day.
+ *
+ * @returns {string[]} unique HH:MM start times, in ascending order
+ */
+export function extractStartTimes(text) {
+  const re = /\b(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?/gi;
+  const raw = [];
+
+  for (const m of text.matchAll(re)) {
+    const hour = Number(m[1]);
+    const minute = Number(m[2] ?? 0);
+    if (hour < 1 || hour > 23 || minute > 59) continue;
+    raw.push({ hour, minute, meridiem: normaliseMeridiem(m[3]) });
+  }
+
+  if (raw.length === 0) return [];
+
+  // Backfill a missing meridiem from the next entry that has one.
+  for (let i = raw.length - 1; i >= 0; i -= 1) {
+    if (!raw[i].meridiem) {
+      raw[i].meridiem = raw[i + 1]?.meridiem ?? guessMeridiem(raw[i].hour);
+    }
+  }
+
+  const times = raw.map((t) => to24(t.hour, t.minute, t.meridiem));
+  return [...new Set(times)].sort();
 }
 
 /**
@@ -218,6 +286,20 @@ function normaliseMeridiem(raw) {
  */
 export function extractAreas(text) {
   return KNOWN_AREAS.filter((area) => new RegExp(`\\b${area}\\b`, 'i').test(text));
+}
+
+/**
+ * Character index of the first town name in the text, or -1.
+ * Used to split an offer line into its time part and its area part, which
+ * works for both "3 pm or 4 pm - Needham only" and "5-6 pm Needham/Dover".
+ */
+export function firstAreaIndex(text) {
+  let best = -1;
+  for (const area of KNOWN_AREAS) {
+    const m = text.match(new RegExp(`\\b${area}\\b`, 'i'));
+    if (m && (best === -1 || m.index < best)) best = m.index;
+  }
+  return best;
 }
 
 /** Canonical identity for a lesson: date + start time + sorted areas (§4). */

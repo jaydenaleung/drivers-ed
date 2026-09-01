@@ -300,7 +300,7 @@ test('a matching lesson gets exactly one email and one notification', async () =
   await ingestPost(db, OPENING_POST, deps);
   const tally = await runClaimSweep(db, deps);
 
-  assert.deepEqual(tally, { sent: 1, skipped: 0, failed: 0 });
+  assert.deepEqual(tally, { sent: 1, skipped: 0, failed: 0, emails: 1 });
   assert.equal(sentEmails.length, 1);
   assert.equal(notifications.length, 1);
 

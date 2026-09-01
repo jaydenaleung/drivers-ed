@@ -50,6 +50,36 @@ export function logError(db, stage, error, context) {
   console.error(`[${stage}] ${message}`);
 }
 
+/**
+ * Logs an error only if the identical message has not been recorded in the
+ * last `windowMinutes`.
+ *
+ * A persistent fault — an invalid Anthropic key, say — otherwise produces one
+ * row per post and buries every genuine error under a wall of duplicates. The
+ * fault is still reported; it just is not reported a hundred times.
+ */
+export function logErrorOnce(db, stage, error, context, windowMinutes = 60) {
+  const message = error instanceof Error ? error.message : String(error);
+
+  try {
+    const seen = db
+      .prepare(
+        `SELECT id FROM errors
+          WHERE stage = ? AND message = ?
+            AND occurred_at > datetime('now', ?)
+          LIMIT 1`,
+      )
+      .get(stage, message, `-${windowMinutes} minutes`);
+
+    if (seen) return;
+  } catch {
+    // If the lookup fails for any reason, fall through and log normally —
+    // losing an error is worse than logging a duplicate.
+  }
+
+  logError(db, stage, error, context);
+}
+
 export function recentErrors(db, limit = 100) {
   return db
     .prepare('SELECT * FROM errors ORDER BY occurred_at DESC, id DESC LIMIT ?')

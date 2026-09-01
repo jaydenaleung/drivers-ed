@@ -1,6 +1,6 @@
 import { SKIP_REASONS } from './db.js';
 import { getSettings } from './settings.js';
-import { logError, STAGES } from './errors.js';
+import { logError, logErrorOnce, STAGES } from './errors.js';
 import { evaluateLesson } from './matcher.js';
 import { parsePost as defaultParsePost } from './parser/index.js';
 import { sendClaimEmail as defaultSendEmail } from './email.js';
@@ -72,7 +72,9 @@ export async function ingestPost(db, post, depsOverride = {}) {
   const { parsed, parser, haikuError } = result;
 
   if (haikuError) {
-    logError(db, STAGES.PARSE, `Haiku parser failed, used regex instead: ${haikuError}`, {
+    // A broken key or a down API fails on EVERY post. Log it once an hour so
+    // the fault is visible without burying real errors under duplicates.
+    logErrorOnce(db, STAGES.PARSE, `Haiku parser failed, used regex instead: ${haikuError}`, {
       postId: post.id,
     });
   }
@@ -92,20 +94,42 @@ export async function ingestPost(db, post, depsOverride = {}) {
     return { status: 'not_a_lesson', parsed };
   }
 
-  if (!parsed.start_time || !parsed.date) {
+  // A real opening post describes SEVERAL lessons, one per line — e.g.
+  // "8 am, 9 am, 10 am or 11 am - Needham, Westwood or Dover" is four separate
+  // claimable hours, and the next line is a different set again.
+  const offered = parsed.lessons ?? [];
+
+  if (!parsed.date || offered.length === 0) {
     // An opening we could not pin down is worth surfacing — it may be a real
     // lesson the parser choked on, which is exactly the case we must not lose.
     logError(
       db,
       STAGES.PARSE,
-      'Post looks like a lesson opening but has no usable date/time',
+      'Post looks like a lesson opening but no usable date/time could be extracted',
       { postId: post.id, text: post.text, parsed },
     );
     return { status: 'incomplete_lesson', parsed };
   }
 
-  const lessonId = upsertLesson(db, parsed, post.id);
-  return { status: 'lesson_recorded', lessonId, parsed };
+  const lessonIds = offered.map((lesson) =>
+    upsertLesson(
+      db,
+      {
+        date: parsed.date,
+        start_time: lesson.start_time,
+        end_time: lesson.end_time,
+        areas: lesson.areas,
+      },
+      post.id,
+    ),
+  );
+
+  return {
+    status: 'lesson_recorded',
+    lessonIds,
+    count: lessonIds.length,
+    parsed,
+  };
 }
 
 /** The lesson date a bare "today" refers to: the post's own publish date. */
@@ -230,7 +254,8 @@ export async function runClaimSweep(db, depsOverride = {}) {
     )
     .all(today);
 
-  const tally = { sent: 0, skipped: 0, failed: 0 };
+  const tally = { sent: 0, skipped: 0, failed: 0, emails: 0 };
+  const matching = [];
 
   for (const row of rows) {
     const lesson = hydrate(row);
@@ -242,10 +267,23 @@ export async function runClaimSweep(db, depsOverride = {}) {
       continue;
     }
 
-    const outcome = await claimLesson(db, lesson, deps);
-    if (outcome === 'sent') tally.sent += 1;
-    else if (outcome === 'failed') tally.failed += 1;
-    else tally.skipped += 1;
+    matching.push(lesson);
+  }
+
+  if (matching.length === 0) return tally;
+
+  // Every matching lesson goes into ONE email, comma-separated. A post can
+  // advertise a dozen hours and several may fit the criteria; sending one email
+  // each would be a burst of requests for what is really one conversation.
+  const outcome = await claimLessons(db, matching, deps);
+
+  if (outcome.result === 'sent') {
+    tally.sent = outcome.lessons.length;
+    tally.emails = 1;
+  } else if (outcome.result === 'failed') {
+    tally.failed = outcome.lessons.length;
+  } else {
+    tally.skipped += matching.length;
   }
 
   return tally;
@@ -280,55 +318,70 @@ function recordSkip(db, lessonId, reason) {
  * transaction: holding a write lock across a network call would block the
  * dashboard, and an open transaction cannot make an already-sent email unsent.
  */
-async function claimLesson(db, lesson, deps) {
-  const claim = db
-    .prepare(
+async function claimLessons(db, lessons, deps) {
+  // Flip EVERY lesson in the batch to 'sending' inside ONE SQLite transaction.
+  // better-sqlite3 transactions are synchronous, so there is no await between
+  // the check and the write and no second copy of this code can interleave.
+  // A lesson whose UPDATE matched zero rows was taken by someone else and is
+  // simply left out of the email.
+  const claimAll = db.transaction((candidates) => {
+    const flip = db.prepare(
       `UPDATE lessons SET status = 'sending', updated_at = datetime('now')
         WHERE id = ? AND status IN ('open', 'skipped_no_match')`,
-    )
-    .run(lesson.id);
+    );
+    return candidates.filter((l) => flip.run(l.id).changes === 1);
+  });
 
-  if (claim.changes === 0) {
-    return 'lost_race';
+  const claimed = claimAll(lessons);
+
+  if (claimed.length === 0) {
+    return { result: 'lost_race', lessons: [] };
   }
+
+  const ids = claimed.map((l) => l.id);
+  const placeholders = ids.map(() => '?').join(', ');
 
   let sendResult;
   try {
-    sendResult = await deps.sendClaimEmail(lesson);
+    // One email covering every claimed lesson, comma-separated.
+    sendResult = await deps.sendClaimEmail(claimed);
   } catch (err) {
-    // §6: never lose a real opening to a transient SMTP error. Put it back to
-    // 'open' so the next sweep retries.
+    // §6: never lose a real opening to a transient SMTP error. Put the whole
+    // batch back to 'open' so the next sweep retries it.
     db.prepare(
       `UPDATE lessons SET status = 'open', skip_reason = NULL, updated_at = datetime('now')
-        WHERE id = ? AND status = 'sending'`,
-    ).run(lesson.id);
-    logError(db, STAGES.EMAIL, err, { lessonId: lesson.id, lesson });
-    return 'failed';
+        WHERE id IN (${placeholders}) AND status = 'sending'`,
+    ).run(...ids);
+    logError(db, STAGES.EMAIL, err, { lessonIds: ids, lessons: claimed });
+    return { result: 'failed', lessons: claimed };
   }
 
-  // Only now, with SMTP confirmed, is the lesson recorded as claimed.
+  // Only now, with SMTP confirmed, are the lessons recorded as claimed.
   db.prepare(
     `UPDATE lessons SET status = 'email_sent', skip_reason = NULL,
             email_sent_at = datetime('now'), updated_at = datetime('now')
-      WHERE id = ?`,
-  ).run(lesson.id);
+      WHERE id IN (${placeholders})`,
+  ).run(...ids);
 
   // §7: a notification failure must not undo any of the above.
   try {
-    const notified = await deps.notify(lesson);
+    const notified = await deps.notify(claimed);
     if (!notified?.ok) {
-      logError(db, STAGES.NOTIFY, notified?.error ?? 'ntfy push failed', { lessonId: lesson.id });
+      logError(db, STAGES.NOTIFY, notified?.error ?? 'ntfy push failed', { lessonIds: ids });
     }
   } catch (err) {
-    logError(db, STAGES.NOTIFY, err, { lessonId: lesson.id });
+    logError(db, STAGES.NOTIFY, err, { lessonIds: ids });
   }
 
+  const summary = claimed
+    .map((l) => `${l.lesson_date} ${l.start_time} ${l.areas.join('/')}`)
+    .join(', ');
   console.log(
-    `[claim] emailed for lesson ${lesson.lesson_date} ${lesson.start_time} ` +
-      `${lesson.areas.join('/')} (messageId ${sendResult?.messageId ?? 'n/a'})`,
+    `[claim] one email claiming ${claimed.length} lesson(s): ${summary} ` +
+      `(messageId ${sendResult?.messageId ?? 'n/a'})`,
   );
 
-  return 'sent';
+  return { result: 'sent', lessons: claimed };
 }
 
 /** Decodes the JSON columns on a lessons row. */

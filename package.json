@@ -11,7 +11,10 @@
     "start": "node src/index.js",
     "test": "node --test \"test/**/*.test.js\"",
     "replay": "node src/tools/replay.js",
-    "parse": "node src/tools/parse-one.js"
+    "parse": "node src/tools/parse-one.js",
+    "preflight": "node src/tools/preflight.js",
+    "env-check": "node src/tools/env-check.js",
+    "live-test": "node src/tools/live-test.js"
   },
   "repository": {
     "type": "git",

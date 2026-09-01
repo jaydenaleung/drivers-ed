@@ -25,6 +25,9 @@ export const SKIP_REASONS = {
   WRONG_DATE: 'wrong_date',
   ALREADY_CLAIMED: 'already_claimed',
   ALREADY_EMAILED: 'already_emailed',
+  // One post can offer a dozen hours. We claim at most one of them, or the
+  // school receives a burst of emails for what is really a single request.
+  SIBLING_CLAIMED: 'sibling_claimed',
 };
 
 /** Human-readable labels for the dashboard. */
@@ -35,6 +38,7 @@ export const SKIP_REASON_LABELS = {
   wrong_date: 'Outside your date range',
   already_claimed: 'School announced it was already claimed',
   already_emailed: 'Already emailed for this lesson',
+  sibling_claimed: 'Another hour from the same post was claimed',
 };
 
 const SCHEMA = `

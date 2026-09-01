@@ -1,20 +1,39 @@
 /**
  * Runs fixtures/replay-posts.json through the full pipeline against a throwaway
- * in-memory database, then prints what happened. No X API calls, no credits
- * spent, no emails sent (DRY_RUN is forced on regardless of your .env).
+ * in-memory database, then prints what happened.
  *
  *   npm run replay
+ *
+ * This is guaranteed free and offline: no X API call, no Anthropic call, no
+ * email, no push. It exercises parse -> dedupe -> claim notices -> match ->
+ * send -> notify with the network edges stubbed out.
+ *
+ * NOTE ON IMPORT ORDER: every import below is dynamic and deliberately so.
+ * `import` statements are hoisted and evaluated BEFORE any top-level code, so
+ * setting process.env at the top of the file with static imports would happen
+ * too late — config.js would already have read the real values. That bug
+ * previously made this script capable of sending real email when DRY_RUN=false.
  */
-process.env.DRY_RUN = 'true';
 
-import fs from 'node:fs';
-import path from 'node:path';
-import { config, KNOWN_AREAS } from '../config.js';
-import { openDatabase } from '../db.js';
-import { updateSettings } from '../settings.js';
-import { ingestPost, runClaimSweep, hydrate } from '../pipeline.js';
-import { recentErrors } from '../errors.js';
-import { SKIP_REASON_LABELS } from '../db.js';
+// Must be set before anything imports config.js.
+process.env.DRY_RUN = 'true';
+// Force the regex parser. Replay must never spend Anthropic credits.
+process.env.ANTHROPIC_API_KEY = '';
+
+const fs = (await import('node:fs')).default;
+const path = (await import('node:path')).default;
+const { config, KNOWN_AREAS } = await import('../config.js');
+const { openDatabase, SKIP_REASON_LABELS } = await import('../db.js');
+const { updateSettings } = await import('../settings.js');
+const { ingestPost, runClaimSweep, hydrate } = await import('../pipeline.js');
+const { recentErrors } = await import('../errors.js');
+
+// Belt and braces: if anything above failed to take effect, stop rather than
+// risk emailing the driving school from a test script.
+if (!config.dryRun) {
+  console.error('Refusing to run: DRY_RUN did not take effect. This script must never send email.');
+  process.exit(1);
+}
 
 const fixturePath = path.resolve(config.root, process.argv[2] ?? 'fixtures/replay-posts.json');
 
@@ -38,7 +57,8 @@ updateSettings(db, {
   overrunBufferMinutes: 30,
 });
 
-console.log(`\nReplaying ${posts.length} posts from ${path.basename(fixturePath)}\n`);
+console.log(`\nReplaying ${posts.length} posts from ${path.basename(fixturePath)}`);
+console.log('(regex parser only, no network calls)\n');
 
 // Fixture posts carry no created_at so the scenario always plays out relative
 // to today — otherwise "today" in the fixture text would drift into the past
@@ -51,7 +71,7 @@ for (const [i, raw] of posts.entries()) {
     created_at: raw.created_at ?? new Date(baseTime + i * 60_000).toISOString(),
   };
   const result = await ingestPost(db, post);
-  const preview = raw.text.length > 68 ? `${post.text.slice(0, 65)}...` : post.text;
+  const preview = raw.text.length > 68 ? `${raw.text.slice(0, 65)}...` : raw.text;
   console.log(`  ${String(result.status).padEnd(18)} ${preview}`);
 }
 
@@ -73,5 +93,5 @@ if (errors.length) {
   for (const e of errors) console.log(`  [${e.stage}] ${e.message}`);
 }
 
-console.log('\n(DRY RUN — nothing was actually emailed or pushed.)\n');
+console.log('\n(DRY RUN — nothing was emailed or pushed, and no API credits were used.)\n');
 db.close();

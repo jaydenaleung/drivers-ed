@@ -1,8 +1,15 @@
-import 'dotenv/config';
+import dotenv from 'dotenv';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+// Load .env.local first, then .env. dotenv never overwrites a value that is
+// already set, so .env.local wins where both define the same key. Either file
+// on its own is fine — locally you may prefer .env.local; the systemd unit on
+// the server reads .env.
+dotenv.config({ path: path.join(ROOT, '.env.local'), quiet: true });
+dotenv.config({ path: path.join(ROOT, '.env'), quiet: true });
 
 function bool(value, fallback) {
   if (value === undefined || value === '') return fallback;

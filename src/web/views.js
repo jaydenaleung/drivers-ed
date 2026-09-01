@@ -67,9 +67,9 @@ function page(title, body) {
 
 export function loginPage({ error } = {}) {
   return page(
-    'Sign in — lesson bot',
+    'Sign in — drivers-ed',
     `<div class="card" style="max-width:24rem;margin:12vh auto">
-      <h1>Lesson bot</h1>
+      <h1>drivers-ed</h1>
       <p class="sub">Enter the dashboard password.</p>
       ${error ? `<div class="banner bad">${esc(error)}</div>` : ''}
       <form method="post" action="/login">
@@ -242,8 +242,8 @@ export function dashboardPage(model) {
   const { settings, claimed, skipped, errors, health, flash } = model;
 
   return page(
-    'Lesson bot dashboard',
-    `<h1>Needham Driving School — lesson bot</h1>
+    'drivers-ed dashboard',
+    `<h1>Needham Driving School — drivers-ed</h1>
      <p class="sub">Watching <strong>@NeedhamDriving</strong> · polling every ${esc(
        health.pollIntervalSeconds,
      )}s · <a href="/logout">sign out</a></p>

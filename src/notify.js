@@ -11,14 +11,21 @@ import { formatMonthDay, formatClockTime, formatAreas } from './email.js';
  * lesson status, so this function resolves with {ok:false} instead of throwing.
  * The caller logs it to the errors table and moves on.
  */
-export async function notifyClaimSent(lesson, { dryRun = config.dryRun, fetchImpl = fetch } = {}) {
-  const monthDay = formatMonthDay(lesson.lesson_date);
-  const start = formatClockTime(lesson.start_time);
-  const end = lesson.end_time ? `-${formatClockTime(lesson.end_time)}` : '';
-  const areas = formatAreas(lesson.areas);
+export async function notifyClaimSent(
+  lessonOrLessons,
+  { dryRun = config.dryRun, fetchImpl = fetch } = {},
+) {
+  const lessons = Array.isArray(lessonOrLessons) ? lessonOrLessons : [lessonOrLessons];
 
-  const title = 'Lesson claim email sent';
-  const body = `${monthDay}, ${start}${end} — ${areas}\nEmailed ${config.email.to}`;
+  const describe = (l) => {
+    const end = l.end_time ? `-${formatClockTime(l.end_time)}` : '';
+    return `${formatMonthDay(l.lesson_date)}, ${formatClockTime(l.start_time)}${end} — ${formatAreas(l.areas)}`;
+  };
+
+  // One email covers every matching lesson, so one push describes them all.
+  const title =
+    lessons.length === 1 ? 'Lesson claim email sent' : `${lessons.length} lesson claims sent`;
+  const body = `${lessons.map(describe).join('\n')}\nEmailed ${config.email.to}`;
 
   if (dryRun) {
     console.log(`[ntfy] DRY RUN — would push: ${title} / ${body.replace(/\n/g, ' | ')}`);

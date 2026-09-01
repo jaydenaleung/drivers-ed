@@ -128,10 +128,10 @@ test('email domain does not become an area', () => {
 
 test('a URL containing a town name does not become an area', () => {
   const r = parseWithRegex(
-    'Open today 1-2pm Dedham. Book at https://example.com/weston-branch',
+    'Lessons open today 1-2pm Dedham. Book at https://example.com/weston-branch',
     OPTS,
   );
-  assert.deepEqual(r.areas, ['Dedham']);
+  assert.deepEqual(r.areas, ['Dedham'], 'Weston appears only inside the scrubbed URL');
 });
 
 // ---------------------------------------------------------------------------
@@ -244,15 +244,19 @@ test('normaliseHaikuOutput discards values in the wrong format', () => {
     is_claim_notice: false,
     is_blanket_claim: false,
     date: 'July 27th', // not YYYY-MM-DD
-    start_time: '1pm', // not HH:MM
-    end_time: '14:00',
-    areas: ['Needham', 'Atlantis'],
+    lessons: [
+      { start_time: '1pm', end_time: '14:00', areas: ['Needham'] }, // bad time -> dropped
+      { start_time: '13:00', end_time: 'later', areas: ['Needham', 'Atlantis'] },
+    ],
+    claim_start_time: null,
+    claim_areas: [],
   });
 
-  assert.equal(out.date, null);
-  assert.equal(out.start_time, null);
-  assert.equal(out.end_time, '14:00');
-  assert.deepEqual(out.areas, ['Needham'], 'unknown towns are dropped');
+  assert.equal(out.date, null, 'a date in the wrong format is discarded');
+  assert.equal(out.lessons.length, 1, 'a lesson with an unusable start time is dropped');
+  assert.equal(out.lessons[0].start_time, '13:00');
+  assert.equal(out.lessons[0].end_time, null, 'an unusable end time becomes null');
+  assert.deepEqual(out.lessons[0].areas, ['Needham'], 'unknown towns are dropped');
 });
 
 test('mergeParserResults backfills Haiku gaps from regex', () => {
@@ -261,6 +265,7 @@ test('mergeParserResults backfills Haiku gaps from regex', () => {
     is_claim_notice: false,
     is_blanket_claim: false,
     date: null,
+    lessons: [],
     start_time: null,
     end_time: null,
     areas: [],
@@ -270,6 +275,7 @@ test('mergeParserResults backfills Haiku gaps from regex', () => {
     is_claim_notice: false,
     is_blanket_claim: false,
     date: '2026-07-27',
+    lessons: [{ start_time: '13:00', end_time: '14:00', areas: ['Needham'] }],
     start_time: '13:00',
     end_time: '14:00',
     areas: ['Needham'],
@@ -287,6 +293,7 @@ test('mergeParserResults keeps Haiku values when it has them', () => {
     is_claim_notice: false,
     is_blanket_claim: false,
     date: '2026-07-27',
+    lessons: [{ start_time: '13:00', end_time: '14:00', areas: ['Wellesley'] }],
     start_time: '13:00',
     end_time: '14:00',
     areas: ['Wellesley'],

@@ -52,11 +52,18 @@ export async function parsePost(postText, opts = {}) {
  * extracted values. Exported for testing.
  */
 export function mergeParserResults(haiku, regex) {
+  // A post advertises several lessons. If Haiku found none but regex did, use
+  // the regex set wholesale — mixing the two would pair one parser's times
+  // with the other's towns, which is how you invent a lesson that never
+  // existed. Whole-set fallback keeps every lesson internally consistent.
+  const lessons = haiku.lessons?.length ? haiku.lessons : (regex.lessons ?? []);
+
   return {
     is_lesson_opening: haiku.is_lesson_opening,
     is_claim_notice: haiku.is_claim_notice,
     is_blanket_claim: haiku.is_blanket_claim,
     date: haiku.date ?? regex.date,
+    lessons,
     start_time: haiku.start_time ?? regex.start_time,
     end_time: haiku.end_time ?? regex.end_time,
     areas: haiku.areas.length > 0 ? haiku.areas : regex.areas,
