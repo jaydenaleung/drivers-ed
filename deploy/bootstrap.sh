@@ -49,21 +49,40 @@ echo "node $(node -v)"
 
 # ---------------------------------------------------------------------------
 say "2. Unprivileged service user"
+# Deliberately NOT --home "$APP_DIR". Making the app directory the service
+# user's home hands that user ownership of its own source code, which is both a
+# weaker security posture and the reason git refuses to run as root here
+# ("dubious ownership", CVE-2022-24765). The code stays root-owned and
+# read-only to the service; only data/ is writable.
 if ! id -u "$APP_USER" >/dev/null 2>&1; then
-  adduser --system --group --home "$APP_DIR" "$APP_USER"
+  adduser --system --group --no-create-home --home /nonexistent "$APP_USER"
   echo "created $APP_USER"
 else
   echo "$APP_USER already exists"
+  # Repair an earlier run that pointed the home at $APP_DIR.
+  if [[ "$(getent passwd "$APP_USER" | cut -d: -f6)" == "$APP_DIR" ]]; then
+    usermod -d /nonexistent "$APP_USER"
+    echo "moved its home off $APP_DIR"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
 say "3. Application code"
+# Reclaim the tree for root if a previous run (or a manual clone) left it owned
+# by the service user, otherwise git refuses to touch it.
+if [[ -d "$APP_DIR" ]]; then
+  chown -R root:root "$APP_DIR"
+fi
+# Belt and braces for any other ownership surprise.
+git config --global --add safe.directory "$APP_DIR" 2>/dev/null || true
+
 if [[ -d "$APP_DIR/.git" ]]; then
   git -C "$APP_DIR" fetch --quiet origin
   git -C "$APP_DIR" reset --hard --quiet origin/main
   echo "updated existing checkout"
 else
-  # The directory already exists (it is the service user's home), so clone into it.
+  # $APP_DIR may already exist (e.g. a manual clone), so stage the clone in /tmp
+  # and copy in, rather than requiring an empty target.
   git clone --quiet "$REPO_URL" /tmp/drivers-ed-clone
   cp -a /tmp/drivers-ed-clone/. "$APP_DIR/"
   rm -rf /tmp/drivers-ed-clone
@@ -72,8 +91,21 @@ fi
 
 cd "$APP_DIR"
 npm install --omit=dev --no-audit --no-fund
+
+# The service only ever writes to data/ (the SQLite file and its WAL sidecars).
+# Everything else stays root-owned and world-readable, so a compromised bot
+# cannot rewrite its own code.
 mkdir -p "$APP_DIR/data"
-chown -R "$APP_USER:$APP_USER" "$APP_DIR"
+chown -R root:root "$APP_DIR"
+chown -R "$APP_USER:$APP_USER" "$APP_DIR/data"
+chmod 755 "$APP_DIR"
+
+# .env, if already uploaded, must stay readable by the service and nobody else.
+if [[ -f "$APP_DIR/.env" ]]; then
+  chown "$APP_USER:$APP_USER" "$APP_DIR/.env"
+  chmod 600 "$APP_DIR/.env"
+  echo "secured existing .env"
+fi
 
 # ---------------------------------------------------------------------------
 say "4. systemd service"
@@ -120,6 +152,8 @@ The service is installed but NOT started, because it has no secrets yet.
 
        sudo chown ${APP_USER}:${APP_USER} ${APP_DIR}/.env
        sudo chmod 600 ${APP_DIR}/.env
+
+     (Or just re-run this script — it secures an existing .env for you.)
 
   2. Confirm it loaded (prints key names and lengths, never the secrets):
 
