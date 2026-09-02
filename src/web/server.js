@@ -136,6 +136,26 @@ export function createServer(db) {
     res.redirect('/');
   });
 
+  // Deleting the lesson row is what actually lets a later identical post be
+  // treated as new: dedupe is a UNIQUE index on date+start_time+areas, so while
+  // the row exists the same lesson can never be re-created. Removing test data
+  // therefore has to remove the rows, not just hide them.
+  app.post('/lessons/clear-skipped', (req, res) => {
+    db.prepare(
+      `DELETE FROM lessons
+        WHERE status IN ('skipped_no_match', 'skipped_already_claimed', 'claimed_by_school', 'error')`,
+    ).run();
+    res.redirect('/');
+  });
+
+  app.post('/lessons/clear-claimed', (req, res) => {
+    // Only the sent records. An in-flight 'sending' row is deliberately left
+    // alone — deleting it mid-send would drop the guard that stops a second
+    // email going out for the same lesson.
+    db.prepare("DELETE FROM lessons WHERE status = 'email_sent'").run();
+    res.redirect('/');
+  });
+
   app.post('/test-notification', async (req, res) => {
     const result = await sendTestNotification();
     res.type('html').send(

@@ -46,6 +46,11 @@ table { width:100%; border-collapse:collapse; font-size:.9rem; }
 th,td { text-align:left; padding:.45rem .5rem; border-bottom:1px solid var(--line); vertical-align:top; }
 th { color:var(--muted); font-size:.78rem; text-transform:uppercase; letter-spacing:.04em; }
 .scroll { overflow-x:auto; }
+/* Lists grow without limit as the bot runs, so cap their height and let
+   them scroll rather than pushing the rest of the page out of reach. */
+.scroll-y { max-height:20rem; overflow-y:auto; overflow-x:auto; }
+.scroll-y thead th { position:sticky; top:0; background:var(--card); }
+.rowactions { display:flex; gap:.6rem; flex-wrap:wrap; align-items:center; margin-top:.9rem; }
 .empty { color:var(--muted); font-style:italic; }
 .pill { display:inline-block; padding:.1rem .45rem; border-radius:999px; font-size:.78rem;
         border:1px solid var(--line); white-space:nowrap; }
@@ -112,7 +117,7 @@ function offBanner(settings, skipped) {
     : '';
 
   return `<div class="banner bad">THE BOT IS OFF — it is watching and recording, but it will not
-    claim anything.${detail} Tick <em>Bot is OFF</em> in Settings below and press Save to arm it.</div>`;
+    claim anything.${detail} Tick <em>Enable bot</em> in Settings below and press Save to arm it.</div>`;
 }
 
 function healthBanner({ lastPollAt, lastPollError, pollIntervalSeconds, dryRun, replayMode }) {
@@ -177,7 +182,10 @@ function settingsForm(settings, { saved, error }) {
       <p class="toggle">
         <input type="checkbox" id="script_enabled" name="script_enabled" value="1"
                ${settings.scriptEnabled ? 'checked' : ''}>
-        <label for="script_enabled" style="margin:0">Bot is ${settings.scriptEnabled ? 'ON' : 'OFF'}</label>
+        <label for="script_enabled" style="margin:0">Enable bot</label>
+        <span class="pill" style="font-weight:600;color:${
+          settings.scriptEnabled ? 'var(--ok)' : 'var(--bad)'
+        };border-color:currentColor">currently ${settings.scriptEnabled ? 'ON' : 'OFF'}</span>
       </p>
 
       <label>Areas <span style="font-weight:400;color:var(--muted)">— a lesson matches if it mentions any one of these</span></label>
@@ -216,7 +224,7 @@ function timeCell(lesson) {
 
 function claimedTable(rows) {
   if (!rows.length) return `<p class="empty">Nothing claimed yet.</p>`;
-  return `<div class="scroll"><table>
+  return `<div class="scroll-y"><table>
     <thead><tr><th>Date</th><th>Time</th><th>Areas</th><th>Email sent</th></tr></thead>
     <tbody>${rows
       .map(
@@ -232,7 +240,7 @@ function claimedTable(rows) {
 
 function skippedTable(rows) {
   if (!rows.length) return `<p class="empty">Nothing skipped.</p>`;
-  return `<div class="scroll"><table>
+  return `<div class="scroll-y"><table>
     <thead><tr><th>Date</th><th>Time</th><th>Areas</th><th>Why not claimed</th></tr></thead>
     <tbody>${rows
       .map(
@@ -248,7 +256,7 @@ function skippedTable(rows) {
 
 function errorTable(rows) {
   if (!rows.length) return `<p class="empty">No errors. </p>`;
-  return `<div class="scroll"><table>
+  return `<div class="scroll-y"><table>
     <thead><tr><th>When</th><th>Stage</th><th>Message</th></tr></thead>
     <tbody>${rows
       .map(
@@ -293,11 +301,39 @@ export function dashboardPage(model) {
          This means the claim email was sent, not that the school assigned you the lesson.
        </p>
        ${claimedTable(claimed)}
+       ${
+         claimed.length
+           ? `<div class="rowactions">
+                <form method="post" action="/lessons/clear-claimed">
+                  <button class="secondary" type="submit">Clear these ${claimed.length} record(s)</button>
+                </form>
+                <span class="sub" style="margin:0">
+                  Careful: this is the only record that an email was sent. If the school re-posts
+                  an identical lesson afterwards, the bot will email again.
+                </span>
+              </div>`
+           : ''
+       }
      </div>
 
      <div class="card">
        <h2>Seen but not claimed (${skipped.length})</h2>
+       <p class="sub" style="margin:-.4rem 0 .8rem">
+         Clearing forgets these lessons entirely. A later post offering the same date, time and
+         towns is then treated as brand new and can be claimed — useful for wiping test data so
+         it cannot shadow a real lesson.
+       </p>
        ${skippedTable(skipped)}
+       ${
+         skipped.length
+           ? `<div class="rowactions">
+                <form method="post" action="/lessons/clear-skipped">
+                  <button class="secondary" type="submit">Clear these ${skipped.length} lesson(s)</button>
+                </form>
+                <span class="sub" style="margin:0">Claimed lessons are not touched.</span>
+              </div>`
+           : ''
+       }
      </div>
 
      <div class="card">

@@ -99,7 +99,7 @@ test('a logged-in session sees the dashboard and can save settings', async () =>
     assert.equal(page.status, 200);
     const html = await page.text();
     assert.match(html, /Needham Driving School/);
-    assert.match(html, /Bot is OFF/);
+    assert.match(html, /Enable bot/);
 
     const save = await fetch(`${base}/settings`, {
       method: 'POST',
@@ -195,5 +195,87 @@ test('logging out invalidates the session', async () => {
       redirect: 'manual',
     });
     assert.match(out.headers.get('set-cookie'), /Max-Age=0/);
+  });
+});
+
+test('the enable checkbox is labelled by what it does, not by current state', async () => {
+  await withServer(async ({ base }) => {
+    const { cookie } = await login(base);
+    const html = await (await fetch(`${base}/`, { headers: { Cookie: cookie } })).text();
+
+    assert.match(html, /Enable bot/, 'label must say what ticking it does');
+    assert.match(html, /currently OFF/, 'current state shown separately');
+    assert.ok(
+      !/<label for="script_enabled"[^>]*>Bot is /.test(html),
+      '"Bot is OFF" next to an unticked box reads as if ticking turns it off',
+    );
+  });
+});
+
+test('clearing skipped lessons lets an identical lesson be claimed again', async () => {
+  await withServer(async ({ db, base }) => {
+    const { upsertLesson } = await import('../src/pipeline.js');
+    const id = upsertLesson(
+      db,
+      { date: '2099-03-03', start_time: '14:00', end_time: '15:00', areas: ['Needham'] },
+      'test-post',
+    );
+    db.prepare("UPDATE lessons SET status='skipped_no_match', skip_reason='script_off' WHERE id=?").run(id);
+
+    const { cookie } = await login(base);
+    const res = await fetch(`${base}/lessons/clear-skipped`, {
+      method: 'POST',
+      headers: { Cookie: cookie },
+      redirect: 'manual',
+    });
+    assert.equal(res.status, 302);
+    assert.equal(db.prepare('SELECT COUNT(*) n FROM lessons').get().n, 0);
+
+    // The point of deleting rather than hiding: the dedupe key is free again.
+    const again = upsertLesson(
+      db,
+      { date: '2099-03-03', start_time: '14:00', end_time: '15:00', areas: ['Needham'] },
+      'real-post',
+    );
+    assert.equal(db.prepare('SELECT status FROM lessons WHERE id=?').get(again).status, 'open');
+  });
+});
+
+test('clearing claimed records leaves an in-flight send alone', async () => {
+  await withServer(async ({ db, base }) => {
+    const { upsertLesson } = await import('../src/pipeline.js');
+    const sent = upsertLesson(db, { date: '2099-03-03', start_time: '14:00', areas: ['Needham'] }, 'p1');
+    const sending = upsertLesson(db, { date: '2099-03-04', start_time: '14:00', areas: ['Dover'] }, 'p2');
+    db.prepare("UPDATE lessons SET status='email_sent', email_sent_at=datetime('now') WHERE id=?").run(sent);
+    db.prepare("UPDATE lessons SET status='sending' WHERE id=?").run(sending);
+
+    const { cookie } = await login(base);
+    await fetch(`${base}/lessons/clear-claimed`, {
+      method: 'POST',
+      headers: { Cookie: cookie },
+      redirect: 'manual',
+    });
+
+    assert.equal(db.prepare('SELECT COUNT(*) n FROM lessons').get().n, 1);
+    assert.equal(
+      db.prepare('SELECT status FROM lessons').get().status,
+      'sending',
+      'deleting a sending row would drop the double-send guard mid-flight',
+    );
+  });
+});
+
+test('clearing requires the password', async () => {
+  await withServer(async ({ db, base }) => {
+    const { upsertLesson } = await import('../src/pipeline.js');
+    upsertLesson(db, { date: '2099-03-03', start_time: '14:00', areas: ['Needham'] }, 'p1');
+    db.prepare("UPDATE lessons SET status='skipped_no_match'").run();
+
+    for (const path of ['/lessons/clear-skipped', '/lessons/clear-claimed']) {
+      const res = await fetch(`${base}${path}`, { method: 'POST', redirect: 'manual' });
+      assert.equal(res.status, 302);
+      assert.equal(res.headers.get('location'), '/login');
+    }
+    assert.equal(db.prepare('SELECT COUNT(*) n FROM lessons').get().n, 1, 'nothing deleted');
   });
 });
