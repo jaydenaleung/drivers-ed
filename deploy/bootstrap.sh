@@ -37,6 +37,20 @@ fi
 # ---------------------------------------------------------------------------
 say "1. System packages"
 export DEBIAN_FRONTEND=noninteractive
+
+# A freshly booted Ubuntu VM runs unattended-upgrades, which holds the dpkg
+# lock for several minutes. Without this, any apt command in the meantime dies
+# with "Could not get lock /var/lib/dpkg/lock-frontend" and provisioning stops
+# halfway. Setting the timeout globally (rather than per-command) also covers
+# apt calls made by scripts we invoke, such as NodeSource's installer.
+mkdir -p /etc/apt/apt.conf.d
+echo 'DPkg::Lock::Timeout "900";' > /etc/apt/apt.conf.d/99-drivers-ed-lock-timeout
+
+if fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then
+  echo "another package manager (probably unattended-upgrades) holds the dpkg lock."
+  echo "waiting for it — this can take a few minutes on a new server..."
+fi
+
 apt-get update -qq
 apt-get install -y -qq curl git ca-certificates debian-keyring debian-archive-keyring apt-transport-https
 
