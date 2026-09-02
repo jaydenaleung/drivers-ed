@@ -1,7 +1,7 @@
 import { config, validateConfig, haikuEnabled } from './config.js';
 import { openDatabase, setState, STATE_KEYS } from './db.js';
 import { logError, STAGES } from './errors.js';
-import { fetchNewPosts, CreditsDepletedError, RateLimitedError } from './x/client.js';
+import { fetchNewPosts, CreditsDepletedError, RateLimitedError, SpendCapError } from './x/client.js';
 import { fetchReplayPosts } from './x/replay.js';
 import { ingestPost, runClaimSweep } from './pipeline.js';
 import { createServer } from './web/server.js';
@@ -60,6 +60,9 @@ async function cycle() {
     // them worse and, for credits, costs nothing but noise. Back off hard.
     if (err instanceof CreditsDepletedError) return { backoffSeconds: 300 };
     if (err instanceof RateLimitedError) return { backoffSeconds: 60 };
+    // The cap clears at UTC midnight; re-checking every 10 minutes is plenty
+    // and keeps the log readable.
+    if (err instanceof SpendCapError) return { backoffSeconds: 600 };
 
     // Exponential backoff on anything else, capped at a minute.
     return { backoffSeconds: Math.min(60, 2 ** Math.min(consecutiveFailures, 6)) };

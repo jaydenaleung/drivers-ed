@@ -158,4 +158,8 @@ export const STATE_KEYS = {
   SINCE_ID: 'x_since_id',
   LAST_POLL_OK_AT: 'last_successful_poll_at',
   LAST_POLL_ERROR: 'last_poll_error',
+  // Billable X reads, counted per UTC day. X bills per post returned, and its
+  // own billing window is a UTC day, so this matches how the money is spent.
+  READS_DAY: 'x_reads_utc_day',
+  READS_COUNT: 'x_reads_today',
 };

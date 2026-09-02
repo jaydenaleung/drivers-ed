@@ -54,6 +54,15 @@ function checkTcp(host, port, timeoutMs = 8000) {
 
 console.log('\nPreflight — checking every external service this bot depends on.\n');
 
+// "The value is missing" and "you edited a different file than the one this
+// process reads" look identical without this line.
+if (config.loadedEnvFiles.length === 0) {
+  console.log(`  ${RED}No .env or .env.local found in ${config.root}${OFF}`);
+} else {
+  console.log(`  ${DIM}config loaded from: ${config.loadedEnvFiles.join(', ')}${OFF}`);
+}
+console.log('');
+
 // --- 1. Configuration -------------------------------------------------------
 {
   const missing = [];
@@ -232,7 +241,16 @@ if (config.ntfy.topic) {
     record('ntfy push', false, err.message);
   }
 } else {
-  record('ntfy push', 'skip', 'NTFY_TOPIC not set');
+  // Deliberately a FAIL, not a SKIP. "skip" reads as "we chose not to run
+  // this", but a missing NTFY_TOPIC means the phone push silently will not
+  // work — and being told the moment a lesson is claimed is the whole point.
+  record(
+    'ntfy push',
+    false,
+    'NTFY_TOPIC is empty or missing',
+    'Add NTFY_TOPIC to the config file listed at the top of this output, then restart.\n' +
+      '        Note the server reads /opt/drivers-ed/.env — not the .env.local on your laptop.',
+  );
 }
 
 // --- summary ----------------------------------------------------------------

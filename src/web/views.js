@@ -114,9 +114,14 @@ function healthBanner({ lastPollAt, lastPollError, pollIntervalSeconds, dryRun, 
     // Credit exhaustion is the failure that silently blinds the bot, so it
     // gets the loudest possible treatment rather than sitting in the error feed.
     const isCredits = /credit/i.test(lastPollError);
+    const isCap = /read cap/i.test(lastPollError);
     parts.push(
       `<div class="banner bad">${
-        isCredits ? 'X API CREDITS EXHAUSTED — the bot cannot see new posts until you top up. ' : 'Last poll failed: '
+        isCredits
+          ? 'X API CREDITS EXHAUSTED — the bot cannot see new posts until you top up. '
+          : isCap
+            ? 'DAILY SPEND CAP HIT — polling paused until UTC midnight to stop runaway cost. '
+            : 'Last poll failed: '
       }${esc(lastPollError)}</div>`,
     );
   }

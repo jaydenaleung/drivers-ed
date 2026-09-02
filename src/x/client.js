@@ -34,6 +34,36 @@ export class RateLimitedError extends Error {
   }
 }
 
+/** Thrown when today's billable reads hit MAX_POSTS_PER_DAY. */
+export class SpendCapError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'SpendCapError';
+    this.isSpendCap = true;
+  }
+}
+
+/** X's own billing window is a UTC day, so count against the same boundary. */
+function utcDay(now = new Date()) {
+  return now.toISOString().slice(0, 10);
+}
+
+/** Billable reads so far today, resetting automatically at UTC midnight. */
+export function readsToday(db, now = new Date()) {
+  const day = utcDay(now);
+  if (getState(db, STATE_KEYS.READS_DAY) !== day) return 0;
+  return Number(getState(db, STATE_KEYS.READS_COUNT, '0')) || 0;
+}
+
+/** Adds to today's tally, rolling the counter over at UTC midnight. */
+export function recordReads(db, count, now = new Date()) {
+  const day = utcDay(now);
+  const current = readsToday(db, now);
+  setState(db, STATE_KEYS.READS_DAY, day);
+  setState(db, STATE_KEYS.READS_COUNT, String(current + count));
+  return current + count;
+}
+
 /**
  * Fetches posts newer than the stored since_id.
  *
@@ -44,7 +74,22 @@ export class RateLimitedError extends Error {
  *
  * @returns {Promise<{posts: Array, primed: boolean}>} posts oldest-first
  */
-export async function fetchNewPosts(db, { fetchImpl = fetch } = {}) {
+export async function fetchNewPosts(db, { fetchImpl = fetch, now = new Date() } = {}) {
+  // Spend guard. X charges per post RETURNED, so the danger is not the polling
+  // frequency (idle polls are free) but a fault that makes every poll return a
+  // full batch — a since_id cursor that stops advancing, say. At a 10s interval
+  // that is 8,640 polls a day, so an unbounded fault would be expensive. This
+  // stops the loop long before that and surfaces it on the dashboard.
+  const used = readsToday(db, now);
+  if (used >= config.maxPostsPerDay) {
+    throw new SpendCapError(
+      `Daily X read cap reached: ${used}/${config.maxPostsPerDay} posts (about ` +
+        `$${(used * 0.005).toFixed(2)}). Polling is paused until UTC midnight. ` +
+        `Raise MAX_POSTS_PER_DAY if this is legitimate volume, or investigate — ` +
+        `normal usage is roughly 10 posts a day.`,
+    );
+  }
+
   const sinceId = getState(db, STATE_KEYS.SINCE_ID);
   const isFirstRun = !sinceId;
 
@@ -68,6 +113,9 @@ export async function fetchNewPosts(db, { fetchImpl = fetch } = {}) {
   }
 
   const posts = Array.isArray(body?.data) ? body.data : [];
+
+  // Count what we were actually billed for: posts returned, not requests made.
+  if (posts.length > 0) recordReads(db, posts.length, now);
   // X returns newest-first; process oldest-first so a lesson posted and then
   // claimed in the same batch is seen in the order it actually happened.
   const ordered = [...posts].reverse();

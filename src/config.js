@@ -8,8 +8,12 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // already set, so .env.local wins where both define the same key. Either file
 // on its own is fine — locally you may prefer .env.local; the systemd unit on
 // the server reads .env.
-dotenv.config({ path: path.join(ROOT, '.env.local'), quiet: true });
-dotenv.config({ path: path.join(ROOT, '.env'), quiet: true });
+const LOADED_ENV_FILES = [];
+for (const name of ['.env.local', '.env']) {
+  const file = path.join(ROOT, name);
+  const result = dotenv.config({ path: file, quiet: true });
+  if (!result.error) LOADED_ENV_FILES.push(file);
+}
 
 function bool(value, fallback) {
   if (value === undefined || value === '') return fallback;
@@ -23,6 +27,10 @@ function int(value, fallback) {
 
 export const config = {
   root: ROOT,
+  // Which .env file(s) were actually read. Surfaced by the diagnostics tools:
+  // "the value is missing" and "you edited a different file than the one this
+  // process loads" look identical without it.
+  loadedEnvFiles: LOADED_ENV_FILES,
 
   x: {
     bearerToken: process.env.X_BEARER_TOKEN ?? '',
@@ -55,6 +63,11 @@ export const config = {
   host: process.env.HOST || '127.0.0.1',
   databasePath: path.resolve(ROOT, process.env.DATABASE_PATH || './data/driversed.db'),
   pollIntervalSeconds: int(process.env.POLL_INTERVAL_SECONDS, 10),
+  // Hard ceiling on billable X reads per UTC day. X bills per post RETURNED,
+  // so a stuck since_id cursor could in principle re-read the same batch on
+  // every poll. At the default 10s interval that is 8,640 polls a day, so this
+  // cap is the difference between a rounding error and a nasty surprise.
+  maxPostsPerDay: int(process.env.MAX_POSTS_PER_DAY, 400),
   timezone: process.env.TIMEZONE || 'America/New_York',
 
   dryRun: bool(process.env.DRY_RUN, true),
