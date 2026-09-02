@@ -95,6 +95,26 @@ function ago(isoString) {
   return `${Math.floor(secs / 86400)}d ago`;
 }
 
+/**
+ * The bot ships switched OFF so it cannot email anyone before criteria are set.
+ * That is correct, but a lesson missed because the toggle was off is exactly
+ * the failure this whole project exists to prevent — so say it loudly rather
+ * than leaving it as a reason buried in a table column.
+ */
+function offBanner(settings, skipped) {
+  if (settings.scriptEnabled) return '';
+
+  const missed = (skipped ?? []).filter((l) => l.skip_reason === 'script_off').length;
+  const detail = missed
+    ? ` <strong>${missed}</strong> lesson${missed === 1 ? '' : 's'} below ${
+        missed === 1 ? 'was' : 'were'
+      } seen and deliberately not claimed for this reason.`
+    : '';
+
+  return `<div class="banner bad">THE BOT IS OFF — it is watching and recording, but it will not
+    claim anything.${detail} Tick <em>Bot is OFF</em> in Settings below and press Save to arm it.</div>`;
+}
+
 function healthBanner({ lastPollAt, lastPollError, pollIntervalSeconds, dryRun, replayMode }) {
   const parts = [];
 
@@ -261,6 +281,7 @@ export function dashboardPage(model) {
        the database and apply immediately.</span>
      </p>
 
+     ${offBanner(settings, skipped)}
      ${healthBanner(health)}
      ${flash?.notify ? `<div class="banner ${flash.notify.ok ? 'ok' : 'bad'}">${esc(flash.notify.message)}</div>` : ''}
 
