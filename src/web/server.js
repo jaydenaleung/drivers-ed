@@ -177,6 +177,12 @@ function renderDashboard(db, flash) {
     errors: recentErrors(db, 50),
     flash,
     health: {
+      // .env is read once at startup, so "did my edit take effect?" is only
+      // answerable if the page says when this process started and which file
+      // it read. Editing .env and not restarting is the single most common
+      // way to be confused by this dashboard.
+      startedAt: new Date(Date.now() - process.uptime() * 1000).toISOString(),
+      configFiles: config.loadedEnvFiles,
       lastPollAt: getState(db, STATE_KEYS.LAST_POLL_OK_AT),
       lastPollError: getState(db, STATE_KEYS.LAST_POLL_ERROR),
       pollIntervalSeconds: config.pollIntervalSeconds,

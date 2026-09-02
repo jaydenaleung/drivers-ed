@@ -252,6 +252,14 @@ export function dashboardPage(model) {
      <p class="sub">Watching <strong>@NeedhamDriving</strong> · polling every ${esc(
        health.pollIntervalSeconds,
      )}s · <a href="/logout">sign out</a></p>
+     <p class="sub" style="margin-top:-.9rem">
+       Running since ${esc(health.startedAt?.replace('T', ' ').slice(0, 19) ?? 'unknown')} UTC
+       (${esc(ago(health.startedAt) ?? '')}) ·
+       config from <code>${esc((health.configFiles ?? []).join(', ') || 'no .env found')}</code><br>
+       <span style="opacity:.85">Editing that file changes nothing until you run
+       <code>sudo systemctl restart drivers-ed</code>. Areas, times and dates below are stored in
+       the database and apply immediately.</span>
+     </p>
 
      ${healthBanner(health)}
      ${flash?.notify ? `<div class="banner ${flash.notify.ok ? 'ok' : 'bad'}">${esc(flash.notify.message)}</div>` : ''}
