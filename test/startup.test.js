@@ -60,3 +60,24 @@ test('a missing session secret is caught before the server ever binds', async ()
   assert.equal(code, 78);
   assert.match(stderr, /SESSION_SECRET/);
 });
+
+test('a fast poll interval is a note, not a refusal to start', async () => {
+  // Refusing to boot over this cost a real deployment: 3s is 3% of the X rate
+  // limit and idle polls are free, so it is a preference, not a fault.
+  const { code, stderr, stdout } = await runBot({
+    ...BASE,
+    POLL_INTERVAL_SECONDS: '3',
+    POST_SOURCE: 'replay',
+    PORT: '8199',
+  });
+
+  assert.notEqual(code, 78, 'a 3s interval must not block startup');
+  assert.match(`${stdout}${stderr}`, /poll interval\s*:\s*3s/, 'it should actually run at 3s');
+  assert.match(`${stdout}${stderr}`, /Note: POLL_INTERVAL_SECONDS is 3s/, 'but say so');
+});
+
+test('a nonsensical poll interval is still fatal', async () => {
+  const { code, stderr } = await runBot({ ...BASE, POLL_INTERVAL_SECONDS: '0' });
+  assert.equal(code, 78, 'zero would spin the loop with no delay at all');
+  assert.match(stderr, /POLL_INTERVAL_SECONDS must be/);
+});

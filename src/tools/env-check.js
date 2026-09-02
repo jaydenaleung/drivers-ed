@@ -23,10 +23,53 @@ if (files.length === 0) {
   process.exit(1);
 }
 
+const fileProblems = [];
+
 for (const file of files) {
   const raw = fs.readFileSync(file, 'utf8');
   const crlf = raw.includes('\r\n');
-  console.log(`  ${path.basename(file)}  (${raw.length} bytes, ${crlf ? 'CRLF — see note below' : 'LF'})`);
+  console.log(`  ${file}  (${raw.length} bytes, ${crlf ? 'CRLF — PROBLEM, run dos2unix' : 'LF'})`);
+
+  // A key defined twice is the classic "I set it and it still says missing":
+  // dotenv keeps the FIRST occurrence, so a later blank line silently wins in
+  // people's mental model but not in reality — and vice versa.
+  const seen = new Map();
+  raw.split(/\r?\n/).forEach((line, i) => {
+    const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$/);
+    if (!m) {
+      if (line.trim() && !line.trim().startsWith('#')) {
+        fileProblems.push(`${path.basename(file)} line ${i + 1}: not a KEY=value line — ignored`);
+      }
+      return;
+    }
+    const [, key, value] = m;
+    if (seen.has(key)) {
+      fileProblems.push(
+        `${path.basename(file)}: ${key} is defined twice (lines ${seen.get(key)} and ${i + 1}). ` +
+          `The FIRST one wins, so the later edit has no effect.`,
+      );
+    } else {
+      seen.set(key, i + 1);
+    }
+    if (/^\s+|\s+$/.test(value) && value.trim()) {
+      fileProblems.push(`${path.basename(file)} line ${i + 1}: ${key} has surrounding whitespace`);
+    }
+  });
+}
+
+// .env.local is loaded first and dotenv never overwrites an existing value, so
+// a stray .env.local on the server silently shadows the real .env.
+if (files.length > 1) {
+  fileProblems.push(
+    'BOTH .env.local and .env exist. .env.local is loaded FIRST and wins for any key it ' +
+      'defines — edits to .env for those keys will appear to do nothing.',
+  );
+}
+
+if (fileProblems.length) {
+  console.log('');
+  console.log('  FILE PROBLEMS:');
+  for (const p of fileProblems) console.log(`    - ${p}`);
 }
 console.log('');
 

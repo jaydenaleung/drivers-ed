@@ -121,11 +121,44 @@ export function validateConfig(cfg = config) {
     problems.push('SESSION_SECRET is too short — use at least 32 hex characters');
   }
 
-  if (cfg.pollIntervalSeconds < 5) {
-    problems.push('POLL_INTERVAL_SECONDS below 5 is needlessly aggressive; use 5 or more');
+  // Only genuinely unworkable values are fatal. A zero or negative interval
+  // would spin the loop with no delay; anything else is a tuning choice and
+  // refusing to boot over it is the wrong call — see configWarnings().
+  if (!Number.isFinite(cfg.pollIntervalSeconds) || cfg.pollIntervalSeconds < 1) {
+    problems.push(
+      `POLL_INTERVAL_SECONDS must be a whole number of seconds, 1 or more (got "${process.env.POLL_INTERVAL_SECONDS}")`,
+    );
   }
 
   return problems;
+}
+
+/**
+ * Non-fatal notes, printed at startup. These are things worth knowing, not
+ * reasons to refuse to run.
+ *
+ * A previous version treated POLL_INTERVAL_SECONDS below 5 as fatal, which
+ * turned "I'd like to poll a bit faster" into a service that would not boot.
+ * Three seconds is 300 requests per 15 minutes against a 10,000 limit, and
+ * polls that return nothing are not billed — so it is a preference, not a
+ * fault.
+ */
+export function configWarnings(cfg = config) {
+  const warnings = [];
+
+  if (cfg.pollIntervalSeconds < 5) {
+    warnings.push(
+      `POLL_INTERVAL_SECONDS is ${cfg.pollIntervalSeconds}s. That is fine — it uses about ` +
+        `${Math.round((900 / cfg.pollIntervalSeconds / 10000) * 100)}% of the X rate limit and ` +
+        `idle polls are free — but going below ~2s buys you nothing measurable.`,
+    );
+  }
+
+  if (!cfg.dryRun && /needhamdrivingschool\.com/i.test(cfg.email.to)) {
+    warnings.push(`LIVE: claim emails will go to the driving school (${cfg.email.to}).`);
+  }
+
+  return warnings;
 }
 
 /** True when the Haiku parser is usable; otherwise the bot is regex-only. */

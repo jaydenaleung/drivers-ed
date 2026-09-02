@@ -1,4 +1,4 @@
-import { config, validateConfig, haikuEnabled } from './config.js';
+import { config, validateConfig, configWarnings, haikuEnabled } from './config.js';
 import { openDatabase, setState, STATE_KEYS } from './db.js';
 import { logError, STAGES } from './errors.js';
 import { fetchNewPosts, CreditsDepletedError, RateLimitedError, SpendCapError } from './x/client.js';
@@ -40,6 +40,8 @@ function startup() {
     // status`, instead of restart-looping every 5s on a fault no restart can fix.
     process.exit(78);
   }
+
+  for (const w of configWarnings()) console.warn(`Note: ${w}`);
 
   if (!haikuEnabled(config)) {
     console.warn('ANTHROPIC_API_KEY is not set — running regex-only. Unusual wording may be missed.');
