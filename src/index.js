@@ -29,10 +29,16 @@ function banner() {
 function startup() {
   const problems = validateConfig();
   if (problems.length) {
-    console.error('Configuration problems:');
+    console.error('Configuration problems — refusing to start:');
     for (const p of problems) console.error(`  - ${p}`);
-    console.error('\nFix these in your .env file (see .env.example). Refusing to start.');
-    process.exit(1);
+    console.error(
+      `\nConfig was read from: ${config.loadedEnvFiles.join(', ') || 'NO .env FILE FOUND in ' + config.root}`,
+    );
+    console.error('Fix that file, then: sudo systemctl restart drivers-ed');
+    // Exit 78 (EX_CONFIG), not 1. The unit file sets RestartPreventExitStatus=78
+    // so systemd stops immediately with this message visible in `systemctl
+    // status`, instead of restart-looping every 5s on a fault no restart can fix.
+    process.exit(78);
   }
 
   if (!haikuEnabled(config)) {

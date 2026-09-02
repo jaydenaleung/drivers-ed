@@ -5,6 +5,13 @@ Documentation=https://github.com/jaydenaleung/drivers-ed
 After=network-online.target
 Wants=network-online.target
 
+# These belong in [Unit] — systemd silently ignores them under [Service], which
+# is why a bad config could restart-loop forever instead of failing visibly.
+# After 5 failed starts in 60s, give up and leave the unit in a failed state so
+# `systemctl status` shows the problem.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
 [Service]
 Type=simple
 User=driversed
@@ -21,10 +28,10 @@ ExecStart=/usr/bin/node /opt/drivers-ed/src/index.js
 Restart=always
 RestartSec=5
 
-# If it crash-loops more than 5 times in 60s, stop trying and leave it failed
-# so `systemctl status` shows the problem instead of hiding it in a loop.
-StartLimitIntervalSec=60
-StartLimitBurst=5
+# Exit code 78 is EX_CONFIG: the .env is wrong. Restarting cannot fix that, so
+# fail immediately with the reason on screen rather than looping every 5s and
+# burying it in the journal.
+RestartPreventExitStatus=78
 
 StandardOutput=journal
 StandardError=journal
