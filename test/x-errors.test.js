@@ -7,6 +7,8 @@ process.env.X_BEARER_TOKEN = 'test-token';
 process.env.X_ACCOUNT_USER_ID = '1234567890';
 process.env.DRY_RUN = 'true';
 process.env.X_REQUEST_TIMEOUT_SECONDS = '1';
+// The shipped default: no self-imposed request ceiling.
+process.env.MAX_REQUESTS_PER_DAY = '0';
 
 const { openDatabase, getState, setState, STATE_KEYS } = await import('../src/db.js');
 const {
@@ -249,6 +251,38 @@ test('the whole backlog arrives in one batch once polling recovers', async () =>
     'oldest first, so a lesson posted and then claimed is seen in that order',
   );
   assert.equal(getState(db, STATE_KEYS.SINCE_ID), '1006', 'the cursor advances only on success');
+  db.close();
+});
+
+test('with no budget set, polling is never stopped by us', async () => {
+  // Jayden's call: poll until X refuses, rather than guessing at a limit
+  // nobody can look up. A guessed ceiling mostly prevents us learning the real
+  // one.
+  const db = primedDb();
+  const { requestsToday } = await import('../src/x/client.js');
+
+  for (let i = 0; i < 25; i += 1) {
+    await fetchNewPosts(db, { fetchImpl: fakeFetch({ body: { data: [], meta: {} } }) });
+  }
+
+  assert.equal(requestsToday(db), 25, 'requests are still counted — that is the evidence');
+  // The 26th must go through too; nothing here may refuse it.
+  const result = await fetchNewPosts(db, { fetchImpl: fakeFetch({ body: { data: [], meta: {} } }) });
+  assert.deepEqual(result.posts, []);
+  db.close();
+});
+
+test('the request count is available to attach to a failure', async () => {
+  // The one fact missing on 2 Sep: how many requests it took to get refused.
+  const db = primedDb();
+  const { requestsToday } = await import('../src/x/client.js');
+
+  await fetchNewPosts(db, { fetchImpl: fakeFetch({ body: { data: [], meta: {} } }) });
+  await assert.rejects(
+    fetchNewPosts(db, { fetchImpl: fakeFetch({ status: 429, body: { detail: 'usage cap exceeded' } }) }),
+  );
+
+  assert.equal(requestsToday(db), 2, 'the refused request is counted, because X counted it');
   db.close();
 });
 

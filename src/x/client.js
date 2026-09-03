@@ -186,8 +186,10 @@ export async function fetchNewPosts(db, { fetchImpl = fetch, now = new Date() } 
   // REQUESTS, nearly all of which returned nothing and so cost nothing — the
   // money guard above would never have fired. Stopping ourselves here is the
   // difference between a visible pause and X blinding the bot for 14 hours.
+  // 0 disables the guard entirely — poll until X refuses. The counter below
+  // still runs either way.
   const requestsUsed = requestsToday(db, now);
-  if (requestsUsed >= config.maxRequestsPerDay) {
+  if (config.maxRequestsPerDay > 0 && requestsUsed >= config.maxRequestsPerDay) {
     throw new RequestBudgetError(
       `Daily request budget reached: ${requestsUsed}/${config.maxRequestsPerDay} requests today. ` +
         `Polling is paused until UTC midnight. On 2 Sep 2026 about 18,000 requests in a day ended ` +

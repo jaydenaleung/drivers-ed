@@ -78,22 +78,18 @@ export const config = {
   // every poll. At the default 10s interval that is 8,640 polls a day, so this
   // cap is the difference between a rounding error and a nasty surprise.
   maxPostsPerDay: int(process.env.MAX_POSTS_PER_DAY, 400),
-  // Ceiling on REQUESTS per UTC day, separate from maxPostsPerDay above.
+  // Optional ceiling on REQUESTS per UTC day. 0 (the default) means no ceiling:
+  // poll until X itself refuses.
   //
-  // On 2 Sep 2026 about 18,000 requests over ~15 hours of 3-second polling
-  // ended in X returning "usage cap exceeded", and the bot was blind for the
-  // next 14 hours. X does not document a per-day request cap for this endpoint,
-  // so the limit that actually stopped us is not one we can look up. Enforcing
-  // our own is the only cap we can be sure of, and hitting it fails safe: the
-  // bot stops and says so, rather than being cut off by X without warning.
+  // This was briefly on by default after the 2 Sep 2026 cutoff, where ~18,000
+  // requests in ~15 hours of 3-second polling ended in "usage cap exceeded".
+  // Turned off at Jayden's request — a self-imposed guess at a limit nobody can
+  // look up mostly stops the bot from ever telling us what the real limit is.
+  // Set it to a number to turn the guard back on.
   //
-  // 6,000 is roughly half the lowest count that was refused (~12,700 in the UTC
-  // day of the cutoff), which leaves a real margin under a limit we cannot see.
-  // It is also deliberately NOT 10,000: this token's measured 15-minute limit is
-  // 10,000, and having both numbers be 10,000 made the two lines of `npm run
-  // caps` read as one thing. Any sane configuration fits — a 13-hour window at
-  // 30s is 1,560 requests a day, at 10s it is 4,680.
-  maxRequestsPerDay: int(process.env.MAX_REQUESTS_PER_DAY, 6000),
+  // The request COUNTER is independent of this and always runs: it costs
+  // nothing, and it is the only record of how many requests a cutoff took.
+  maxRequestsPerDay: int(process.env.MAX_REQUESTS_PER_DAY, 0),
   timezone: process.env.TIMEZONE || 'America/New_York',
 
   dryRun: bool(process.env.DRY_RUN, true),

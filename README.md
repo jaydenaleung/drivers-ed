@@ -611,10 +611,14 @@ never came close to firing — but the bot was cut off and went blind for 14 hou
 document a per-day request cap for this endpoint, so the limit that stopped it is not one that
 can be looked up.
 
-`MAX_REQUESTS_PER_DAY` (default 6,000) is the answer to that: a budget we enforce ourselves,
-below the level that was refused. Hitting it pauses polling until UTC midnight with a visible
-banner, which is strictly better than X deciding to stop answering. `npm run caps` shows the
-budget, today's usage, and whatever cap figures X has actually reported in its response headers.
+`MAX_REQUESTS_PER_DAY` exists for this, but **defaults to 0 (off)**. A self-imposed ceiling is a
+guess at a limit nobody can look up, and a guess that fires early mostly prevents the bot from
+ever measuring the real one. Set it to a number if you would rather stop short.
+
+What runs regardless is the instrumentation. Every request is counted per UTC day, every 429
+records that count alongside the full response body and rate-limit headers, and
+`npm run diagnose` reconstructs any outage from the database — including how long each post sat
+unread before the bot noticed it, which is proof of a blind period that survives log rotation.
 
 **The first poll deliberately ignores what it sees.** Otherwise every restart would treat the
 existing timeline as brand new and email about lessons that are long gone.

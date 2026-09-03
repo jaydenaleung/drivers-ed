@@ -8,6 +8,8 @@ import {
   SpendCapError,
   UsageCapError,
   RequestBudgetError,
+  requestsToday,
+  readsToday,
 } from './x/client.js';
 import { fetchReplayPosts } from './x/replay.js';
 import { ingestPost, runClaimSweep } from './pipeline.js';
@@ -106,7 +108,15 @@ async function cycle() {
   } catch (err) {
     consecutiveFailures += 1;
     setState(db, STATE_KEYS.LAST_POLL_ERROR, err.message);
-    logError(db, STAGES.POLL, err, { consecutiveFailures });
+    // The counters go into the error row, not just the message. When X refuses
+    // a request, the single most useful fact is how many requests it took to
+    // get refused — on 2 Sep nobody could answer that afterwards.
+    logError(db, STAGES.POLL, err, {
+      consecutiveFailures,
+      requestsToday: requestsToday(db),
+      readsToday: readsToday(db),
+      pollIntervalSeconds: config.pollIntervalSeconds,
+    });
 
     // Credit exhaustion and rate limiting are not transient — hammering makes
     // them worse and, for credits, costs nothing but noise. Back off hard.
