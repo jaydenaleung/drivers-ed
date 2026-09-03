@@ -28,6 +28,8 @@ export const SKIP_REASONS = {
   // One post can offer a dozen hours. We claim at most one of them, or the
   // school receives a burst of emails for what is really a single request.
   SIBLING_CLAIMED: 'sibling_claimed',
+  // The bot is enabled, but the clock is outside the active-hours window.
+  OUTSIDE_ACTIVE_HOURS: 'outside_active_hours',
 };
 
 /** Human-readable labels for the dashboard. */
@@ -39,6 +41,7 @@ export const SKIP_REASON_LABELS = {
   already_claimed: 'School announced it was already claimed',
   already_emailed: 'Already emailed for this lesson',
   sibling_claimed: 'Another hour from the same post was claimed',
+  outside_active_hours: 'Outside the bot’s active hours',
 };
 
 const SCHEMA = `
@@ -51,6 +54,11 @@ CREATE TABLE IF NOT EXISTS settings (
   date_range_start       TEXT,
   date_range_end         TEXT,
   overrun_buffer_minutes INTEGER NOT NULL DEFAULT 30,
+  -- Active-hours window: when set, the bot only polls X and only claims during
+  -- these hours. Stored as local wall-clock time in config.timezone.
+  active_window_enabled  INTEGER NOT NULL DEFAULT 0,
+  active_start           TEXT    NOT NULL DEFAULT '07:00',
+  active_end             TEXT    NOT NULL DEFAULT '21:00',
   updated_at             TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -122,8 +130,34 @@ export function openDatabase(dbPath = config.databasePath) {
   // Wait rather than throw if a write briefly overlaps.
   db.pragma('busy_timeout = 5000');
   db.exec(SCHEMA);
+  migrate(db);
   seedSettings(db);
   return db;
+}
+
+/**
+ * Columns added after the first release.
+ *
+ * The schema above is all `CREATE TABLE IF NOT EXISTS`, which does exactly
+ * nothing to a table that already exists — so a database created before a
+ * column was added would never grow it, and every read of that column would
+ * throw. This closes that gap for the database already running on the server.
+ *
+ * Each entry must have a constant DEFAULT: SQLite requires one for
+ * ALTER TABLE ADD COLUMN on a NOT NULL column.
+ */
+const MIGRATIONS = [
+  ['settings', 'active_window_enabled', "INTEGER NOT NULL DEFAULT 0"],
+  ['settings', 'active_start', "TEXT NOT NULL DEFAULT '07:00'"],
+  ['settings', 'active_end', "TEXT NOT NULL DEFAULT '21:00'"],
+];
+
+function migrate(db) {
+  for (const [table, column, definition] of MIGRATIONS) {
+    const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+    if (columns.some((c) => c.name === column)) continue;
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
 }
 
 /** Inserts the single settings row on first run. Never overwrites it. */
@@ -162,4 +196,8 @@ export const STATE_KEYS = {
   // own billing window is a UTC day, so this matches how the money is spent.
   READS_DAY: 'x_reads_utc_day',
   READS_COUNT: 'x_reads_today',
+  // Rate caps as X itself reported them on the last response, so the dashboard
+  // can show measured numbers instead of figures copied from the docs.
+  RATE_CAPS: 'x_rate_caps',
+  RATE_CAPS_AT: 'x_rate_caps_at',
 };

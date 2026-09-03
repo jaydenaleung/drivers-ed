@@ -1,5 +1,6 @@
 import { config } from '../config.js';
 import { getState, setState, STATE_KEYS } from '../db.js';
+import { capsFromHeaders } from '../capacity.js';
 
 /**
  * X API v2 user-timeline poller (INSTRUCTIONS.md §3).
@@ -46,6 +47,33 @@ export class SpendCapError extends Error {
 /** X's own billing window is a UTC day, so count against the same boundary. */
 function utcDay(now = new Date()) {
   return now.toISOString().slice(0, 10);
+}
+
+/**
+ * Records the rate caps X described on this response.
+ *
+ * The dashboard's "how many hours can this run" note is only worth trusting if
+ * the caps behind it are the real ones. Rather than hardcoding numbers from the
+ * docs and hoping they still hold, we read whatever X puts in the response
+ * headers and prefer that. A response carrying no such headers leaves the last
+ * known values alone — an absent header is not evidence the cap changed.
+ */
+export function recordRateCaps(db, headers, now = new Date()) {
+  const caps = capsFromHeaders(headers);
+  if (caps.length === 0) return null;
+  setState(db, STATE_KEYS.RATE_CAPS, JSON.stringify(caps));
+  setState(db, STATE_KEYS.RATE_CAPS_AT, now.toISOString());
+  return caps;
+}
+
+/** The caps from the most recent poll, or [] if none have been seen yet. */
+export function observedRateCaps(db) {
+  try {
+    const parsed = JSON.parse(getState(db, STATE_KEYS.RATE_CAPS) ?? '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
 /** Billable reads so far today, resetting automatically at UTC midnight. */
@@ -107,6 +135,10 @@ export async function fetchNewPosts(db, { fetchImpl = fetch, now = new Date() } 
   });
 
   const body = await readBody(response);
+
+  // Before the status check: a 429 is precisely when the cap headers matter
+  // most, and throwing first would discard them.
+  recordRateCaps(db, response.headers, now);
 
   if (!response.ok) {
     throw toApiError(response, body);

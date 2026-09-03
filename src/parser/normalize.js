@@ -42,6 +42,27 @@ export function todayInTz(timezone, now = new Date()) {
   }).format(now);
 }
 
+/**
+ * Current wall-clock time in the given IANA timezone, as minutes from midnight.
+ *
+ * The active-hours window is expressed in the user's local time ("only poll
+ * between 07:00 and 21:00"), but the process runs on a server whose clock is
+ * UTC. Comparing against the server's own hours would silently shift the window
+ * by the UTC offset — five hours in New York, and a different five depending on
+ * daylight saving. Formatting through Intl is what keeps the two in step.
+ */
+export function nowMinutesInTz(timezone, now = new Date()) {
+  const hhmm = new Intl.DateTimeFormat('en-GB', {
+    timeZone: timezone,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(now);
+  // en-GB renders midnight as "24:00" in some ICU versions; normalise it.
+  const [h, m] = hhmm.split(':').map(Number);
+  return ((h % 24) * 60 + m) % 1440;
+}
+
 /** Shifts a YYYY-MM-DD string by whole days without any timezone drift. */
 export function addDays(dateStr, days) {
   const [y, m, d] = dateStr.split('-').map(Number);

@@ -5,7 +5,7 @@ import { evaluateLesson } from './matcher.js';
 import { parsePost as defaultParsePost } from './parser/index.js';
 import { sendClaimEmail as defaultSendEmail } from './email.js';
 import { notifyClaimSent as defaultNotify } from './notify.js';
-import { dedupeKey, todayInTz } from './parser/normalize.js';
+import { dedupeKey, todayInTz, nowMinutesInTz } from './parser/normalize.js';
 import { config } from './config.js';
 
 /**
@@ -242,6 +242,7 @@ export async function runClaimSweep(db, depsOverride = {}) {
   const deps = { ...defaultDeps(), ...depsOverride };
   const settings = getSettings(db);
   const today = todayInTz(deps.timezone, deps.now());
+  const nowMinutes = nowMinutesInTz(deps.timezone, deps.now());
 
   // Past lessons can never be claimed, so they drop out of the sweep and it
   // stays O(today's lessons) rather than growing forever.
@@ -259,7 +260,7 @@ export async function runClaimSweep(db, depsOverride = {}) {
 
   for (const row of rows) {
     const lesson = hydrate(row);
-    const verdict = evaluateLesson(lesson, settings);
+    const verdict = evaluateLesson(lesson, settings, nowMinutes);
 
     if (!verdict.matches) {
       recordSkip(db, lesson.id, verdict.skipReason);

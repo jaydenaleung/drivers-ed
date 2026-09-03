@@ -5,6 +5,9 @@ import { fetchNewPosts, CreditsDepletedError, RateLimitedError, SpendCapError } 
 import { fetchReplayPosts } from './x/replay.js';
 import { ingestPost, runClaimSweep } from './pipeline.js';
 import { createServer } from './web/server.js';
+import { getSettings } from './settings.js';
+import { withinWindow } from './capacity.js';
+import { nowMinutesInTz } from './parser/normalize.js';
 
 /**
  * Single-process entrypoint (INSTRUCTIONS.md §3): one background polling loop
@@ -14,6 +17,8 @@ import { createServer } from './web/server.js';
 const db = openDatabase();
 let running = true;
 let consecutiveFailures = 0;
+// Only logged on change — a line every poll would bury everything else.
+let lastWindowState = null;
 
 function banner() {
   console.log('--- drivers-ed lesson bot ---');
@@ -51,14 +56,46 @@ function startup() {
   }
 }
 
+/**
+ * Is the active-hours window open right now?
+ *
+ * Read fresh every cycle rather than cached at startup, so changing the window
+ * on the dashboard takes effect on the next poll instead of at the next restart.
+ */
+function activeNow() {
+  const settings = getSettings(db);
+  if (!settings.activeWindowEnabled) return true;
+  return withinWindow(nowMinutesInTz(config.timezone, new Date()), settings.activeStart, settings.activeEnd);
+}
+
 /** One full cycle: fetch new posts, ingest them, then sweep for claimables. */
 async function cycle() {
   const source = config.postSource === 'replay' ? fetchReplayPosts : fetchNewPosts;
 
-  let batch;
+  // Outside the active window we skip the FETCH — that is the call that spends
+  // rate-limit quota, and skipping it is the entire point of the window. The
+  // sweep below still runs: it is local, free, and it is what records
+  // "outside active hours" against the lessons so the dashboard can explain
+  // itself rather than going quietly blank.
+  const windowOpen = activeNow();
+  if (windowOpen !== lastWindowState) {
+    const settings = getSettings(db);
+    if (settings.activeWindowEnabled) {
+      console.log(
+        windowOpen
+          ? `[window] Active hours started (${settings.activeStart}–${settings.activeEnd} ${config.timezone}) — polling X.`
+          : `[window] Outside active hours (${settings.activeStart}–${settings.activeEnd} ${config.timezone}) — not polling X.`,
+      );
+    }
+    lastWindowState = windowOpen;
+  }
+
+  let batch = { posts: [], primed: false };
   try {
-    batch = await source(db);
-    consecutiveFailures = 0;
+    if (windowOpen) {
+      batch = await source(db);
+      consecutiveFailures = 0;
+    }
   } catch (err) {
     consecutiveFailures += 1;
     setState(db, STATE_KEYS.LAST_POLL_ERROR, err.message);

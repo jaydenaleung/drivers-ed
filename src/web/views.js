@@ -1,5 +1,6 @@
 import { KNOWN_AREAS } from '../config.js';
 import { SKIP_REASON_LABELS } from '../db.js';
+import { windowHours } from '../capacity.js';
 
 /** Escapes anything that reaches the page — post text is untrusted input. */
 export function esc(value) {
@@ -51,6 +52,16 @@ th { color:var(--muted); font-size:.78rem; text-transform:uppercase; letter-spac
 .scroll-y { max-height:20rem; overflow-y:auto; overflow-x:auto; }
 .scroll-y thead th { position:sticky; top:0; background:var(--card); }
 .rowactions { display:flex; gap:.6rem; flex-wrap:wrap; align-items:center; margin-top:.9rem; }
+/* The capacity note sits inside the settings card, so it needs to read as a
+   note rather than as another banner competing with the ones above it. */
+.note { border:1px solid var(--line); border-left:3px solid var(--accent); border-radius:6px;
+        padding:.6rem .8rem; margin:.2rem 0 1rem; font-size:.88rem; background:var(--bg); }
+.note.alert { border-left-color:var(--bad); }
+.note h3 { margin:0 0 .35rem; font-size:.88rem; }
+.note ul { margin:.4rem 0 0; padding-left:1.1rem; }
+.note li { margin:.15rem 0; }
+.bang { color:var(--bad); font-weight:800; font-size:1.05em; }
+.indent { margin-left:1.7rem; }
 .empty { color:var(--muted); font-style:italic; }
 .pill { display:inline-block; padding:.1rem .45rem; border-radius:999px; font-size:.78rem;
         border:1px solid var(--line); white-space:nowrap; }
@@ -120,7 +131,16 @@ function offBanner(settings, skipped) {
     claim anything.${detail} Tick <em>Enable bot</em> in Settings below and press Save to arm it.</div>`;
 }
 
-function healthBanner({ lastPollAt, lastPollError, pollIntervalSeconds, dryRun, replayMode }) {
+function healthBanner({
+  lastPollAt,
+  lastPollError,
+  pollIntervalSeconds,
+  dryRun,
+  replayMode,
+  windowOpen,
+  activeStart,
+  activeEnd,
+}) {
   const parts = [];
 
   if (dryRun) {
@@ -154,6 +174,19 @@ function healthBanner({ lastPollAt, lastPollError, pollIntervalSeconds, dryRun, 
   const staleAfter = Math.max(pollIntervalSeconds * 6, 120) * 1000;
   const stale = !lastPollAt || Date.now() - new Date(lastPollAt).getTime() > staleAfter;
 
+  // A closed active window makes the last poll go stale on purpose. Reporting
+  // that as "the loop may have stopped" would train you to ignore the one
+  // banner that is supposed to mean something is actually wrong.
+  if (windowOpen === false) {
+    parts.push(
+      `<div class="banner warn">OUTSIDE ACTIVE HOURS — the bot is deliberately not polling X until
+        ${esc(activeStart)}. It will resume on its own; nothing is broken.${
+          lastPollAt ? ` Last poll ${esc(ago(lastPollAt))}.` : ''
+        }</div>`,
+    );
+    return parts.join('\n');
+  }
+
   if (!lastPollAt) {
     parts.push(`<div class="banner warn">No successful poll yet.</div>`);
   } else if (stale) {
@@ -169,7 +202,88 @@ function healthBanner({ lastPollAt, lastPollError, pollIntervalSeconds, dryRun, 
   return parts.join('\n');
 }
 
-function settingsForm(settings, { saved, error }) {
+function hrs(n) {
+  const rounded = Math.round(n * 10) / 10;
+  return `${rounded % 1 === 0 ? rounded.toFixed(0) : rounded.toFixed(1)} h`;
+}
+
+/**
+ * The note above the active-hours controls: how many hours a day the X API can
+ * actually sustain at the current poll interval, and whether that is less than
+ * the window the user has asked for.
+ *
+ * Two things this deliberately does NOT do:
+ *  - invent a 24-hour request cap. If X has one for this endpoint it arrives in
+ *    a response header and appears here automatically; until one is seen, the
+ *    note says which figures are measured and which come from the docs.
+ *  - fold the spend caps into the hours figure. X bills per post returned, not
+ *    per request, so those caps bound money and not time. Mixing them in would
+ *    produce a confident-looking number that answers a different question.
+ */
+function capacityNoteHtml(cap, timezone) {
+  if (!cap) return '';
+
+  const short = cap.shortfall;
+  const bang = `<span class="bang" title="Your window is longer than the API can sustain">!</span>`;
+
+  const headline = cap.unlimited
+    ? `At <strong>${esc(cap.pollIntervalSeconds)}s</strong> between polls, no X rate cap ever binds —
+       the bot can poll <strong>continuously, ${hrs(24)}/day</strong>.`
+    : `At <strong>${esc(cap.pollIntervalSeconds)}s</strong> between polls, X's rate caps allow about
+       <strong>${hrs(cap.hoursPerDay)}/day</strong> of polling
+       (limited by ${esc(cap.limitedBy.label.toLowerCase())}).`;
+
+  const comparison = cap.windowEnabled
+    ? short
+      ? `<p class="indent" style="margin:.5rem 0 0;color:var(--bad);font-weight:600">
+           ${bang} You have asked for <strong>${hrs(cap.requestedHours)}/day</strong>, which is
+           ${hrs(cap.shortfallHours)} more than the API can sustain. This is allowed — the bot will
+           simply stop polling partway through the window and resume when the cap resets. Raise the
+           poll interval or shorten the window to close the gap.
+         </p>`
+      : `<p class="indent" style="margin:.5rem 0 0;color:var(--muted)">
+           Your window asks for ${hrs(cap.requestedHours)}/day, which fits comfortably.
+         </p>`
+    : `<p class="indent" style="margin:.5rem 0 0;color:var(--muted)">
+         No window set — the bot polls around the clock.
+       </p>`;
+
+  const capRows = cap.caps
+    .map((c) => {
+      const per = c.requestsPerWindow;
+      const window = c.windowSeconds >= 3600 ? `${c.windowSeconds / 3600} h` : `${c.windowSeconds / 60} min`;
+      const verdict = c.binds
+        ? `<strong style="color:var(--bad)">binds — allows ${hrs(c.hoursPerDay)}/day</strong>`
+        : `does not bind`;
+      return `<li>${esc(c.label)}: <strong>${esc(c.limit.toLocaleString('en-US'))}</strong> per ${esc(window)};
+        we would use <strong>${esc(Math.round(per).toLocaleString('en-US'))}</strong> — ${verdict}
+        <span class="pill">${c.source === 'observed' ? 'measured from X' : 'from the docs'}</span></li>`;
+    })
+    .join('');
+
+  const unobserved = cap.anyObserved
+    ? ''
+    : `<li style="color:var(--muted)">No cap headers seen from X yet. These figures come from the
+         documentation; they are replaced with X's own numbers after the first successful poll,
+         including any 24-hour cap this endpoint turns out to have.</li>`;
+
+  return `<div class="note ${short ? 'alert' : ''}">
+    <h3>Polling capacity ${short ? bang : ''}</h3>
+    <p style="margin:0">${headline}</p>
+    ${comparison}
+    <ul>
+      ${capRows}
+      ${unobserved}
+      <li style="color:var(--muted)">Not counted above, because they cap money rather than hours:
+        X bills per post <em>returned</em>, so polls that find nothing are free and cost nothing
+        no matter how often they run. Your daily read cap and prepaid credit balance are unaffected
+        by the poll interval.</li>
+    </ul>
+    <p style="margin:.5rem 0 0;color:var(--muted)">Active hours are ${esc(timezone)} local time.</p>
+  </div>`;
+}
+
+function settingsForm(settings, { saved, error }, capacity, timezone) {
   const checkbox = (area) => `
     <label><input type="checkbox" name="areas" value="${esc(area)}"
       ${settings.areas.includes(area) ? 'checked' : ''}> ${esc(area)}</label>`;
@@ -186,6 +300,31 @@ function settingsForm(settings, { saved, error }) {
         <span class="pill" style="font-weight:600;color:${
           settings.scriptEnabled ? 'var(--ok)' : 'var(--bad)'
         };border-color:currentColor">currently ${settings.scriptEnabled ? 'ON' : 'OFF'}</span>
+      </p>
+
+      ${capacityNoteHtml(capacity, timezone)}
+
+      <p class="toggle" style="font-size:.95rem">
+        <input type="checkbox" id="active_window_enabled" name="active_window_enabled" value="1"
+               ${settings.activeWindowEnabled ? 'checked' : ''}>
+        <label for="active_window_enabled" style="margin:0">Only run during these hours</label>
+        ${
+          capacity?.shortfall
+            ? `<span class="bang" title="Longer than the API can sustain — see the note above">!</span>`
+            : ''
+        }
+      </p>
+      <div class="row indent">
+        <input type="time" name="active_start" value="${esc(settings.activeStart)}" required>
+        <span style="padding-bottom:.5rem">to</span>
+        <input type="time" name="active_end" value="${esc(settings.activeEnd)}" required>
+        <span class="pill" style="margin-bottom:.45rem">${
+          settings.activeWindowEnabled ? esc(hrs(windowHours(settings.activeStart, settings.activeEnd))) : '—'
+        }/day</span>
+      </div>
+      <p class="sub indent" style="margin:.3rem 0 0">
+        Outside these hours the bot does not call the X API at all, which is what conserves quota.
+        A window may cross midnight — 22:00 to 06:00 is eight hours.
       </p>
 
       <label>Areas <span style="font-weight:400;color:var(--muted)">— a lesson matches if it mentions any one of these</span></label>
@@ -272,7 +411,7 @@ function errorTable(rows) {
 }
 
 export function dashboardPage(model) {
-  const { settings, claimed, skipped, errors, health, flash } = model;
+  const { settings, claimed, skipped, errors, health, flash, capacity } = model;
 
   return page(
     'drivers-ed dashboard',
@@ -293,7 +432,7 @@ export function dashboardPage(model) {
      ${healthBanner(health)}
      ${flash?.notify ? `<div class="banner ${flash.notify.ok ? 'ok' : 'bad'}">${esc(flash.notify.message)}</div>` : ''}
 
-     ${settingsForm(settings, flash ?? {})}
+     ${settingsForm(settings, flash ?? {}, capacity, health.timezone)}
 
      <div class="card">
        <h2>Claimed — we emailed in time (${claimed.length})</h2>

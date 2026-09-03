@@ -1,5 +1,6 @@
 import { SKIP_REASONS } from './db.js';
 import { timeToMinutes } from './parser/normalize.js';
+import { withinWindow } from './capacity.js';
 
 /**
  * Decides whether a lesson should be claimed (INSTRUCTIONS.md §5).
@@ -14,9 +15,14 @@ import { timeToMinutes } from './parser/normalize.js';
  *    window must fit entirely inside the selected time range.
  *  - DATE: inside the selected range; an unset bound means unbounded.
  *
+ * @param {number|null} nowMinutes wall-clock minutes from midnight in the
+ *   configured timezone, used only for the active-hours window. Passed in
+ *   rather than read from a clock so this stays a pure function; null means
+ *   "don't apply the window", which is what every caller that doesn't care
+ *   about active hours gets by default.
  * @returns {{ matches: boolean, skipReason: string|null, effectiveEnd: string|null }}
  */
-export function evaluateLesson(lesson, settings) {
+export function evaluateLesson(lesson, settings, nowMinutes = null) {
   // --- state checks first: these describe the lesson, not the criteria ------
   if (lesson.status === 'claimed_by_school') {
     return skip(SKIP_REASONS.ALREADY_CLAIMED);
@@ -26,6 +32,17 @@ export function evaluateLesson(lesson, settings) {
   }
   if (!settings.scriptEnabled) {
     return skip(SKIP_REASONS.SCRIPT_OFF);
+  }
+
+  // Active hours are a second switch layered on the first: the bot is armed,
+  // but only between these times. Checked before the criteria so the dashboard
+  // reports the real reason rather than blaming the town or the time range.
+  if (
+    settings.activeWindowEnabled &&
+    nowMinutes !== null &&
+    !withinWindow(nowMinutes, settings.activeStart, settings.activeEnd)
+  ) {
+    return skip(SKIP_REASONS.OUTSIDE_ACTIVE_HOURS);
   }
 
   // --- criteria checks ------------------------------------------------------

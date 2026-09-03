@@ -565,6 +565,31 @@ if the bot goes silent (§9 of the spec's optional dead-man's switch).
 sqlite3 /opt/drivers-ed/data/driversed.db ".backup '/root/driversed-backup.db'"
 ```
 
+### Active hours
+
+Under **Enable bot** on the dashboard there is **Only run during these hours**. Outside that
+window the bot does not call the X API at all — that is the only thing that actually conserves
+rate-limit quota, so the window gates the poll itself and not just the claiming. Lessons seen
+earlier are still shown, marked *Outside the bot's active hours*, and are re-evaluated (and
+claimed if they still match) the moment the window opens. A window may cross midnight.
+
+Above it, the **Polling capacity** note answers one question: at your current
+`POLL_INTERVAL_SECONDS`, how many hours a day can the API sustain? Every X rate cap is
+`limit` requests per `window`, so a full bucket lasts `limit × interval` seconds — if that is
+longer than the window it refills faster than you drain it and the cap never binds. If your
+chosen window is longer than the capacity, the dashboard shows a red **!** and explains the gap,
+but still lets you save it: the bot simply stops polling partway through and resumes when the cap
+resets.
+
+The figures come from the `x-rate-limit-*` (and, if this endpoint sends them,
+`x-app-limit-24hour-*`) response headers on the last poll, and each line says whether it was
+*measured from X* or taken *from the docs*. Nothing is assumed about a cap X has not reported.
+
+Note what is deliberately **not** in that calculation: X bills per post *returned*, not per
+request, so an idle poll is free. Your daily read cap and prepaid credit balance are therefore
+unaffected by how often you poll, and folding them into an hours figure would answer a different
+question than the one asked.
+
 ---
 
 ## 8. Design notes worth knowing

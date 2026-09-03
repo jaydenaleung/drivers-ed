@@ -13,6 +13,9 @@ export function getSettings(db) {
     dateRangeStart: row.date_range_start || null,
     dateRangeEnd: row.date_range_end || null,
     overrunBufferMinutes: row.overrun_buffer_minutes ?? 30,
+    activeWindowEnabled: Boolean(row.active_window_enabled),
+    activeStart: row.active_start || '07:00',
+    activeEnd: row.active_end || '21:00',
     updatedAt: row.updated_at,
   };
 }
@@ -35,7 +38,14 @@ function safeParseAreas(raw) {
  */
 export function updateSettings(db, patch) {
   const current = getSettings(db);
-  const next = { ...current, ...patch };
+
+  // A key that isn't in the patch keeps its current value. Without this, a form
+  // POST that omits a field — an older client, a curl, a form rendered before a
+  // new field existed — would spread `undefined` over the stored value and fail
+  // validation on a setting the caller never touched. An explicitly invalid
+  // value is still rejected; only absence is ignored.
+  const supplied = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
+  const next = { ...current, ...supplied };
 
   const errors = validateSettings(next);
   if (errors.length) {
@@ -53,6 +63,9 @@ export function updateSettings(db, patch) {
        date_range_start       = ?,
        date_range_end         = ?,
        overrun_buffer_minutes = ?,
+       active_window_enabled  = ?,
+       active_start           = ?,
+       active_end             = ?,
        updated_at             = datetime('now')
      WHERE id = 1`,
   ).run(
@@ -63,6 +76,9 @@ export function updateSettings(db, patch) {
     next.dateRangeStart || null,
     next.dateRangeEnd || null,
     Number(next.overrunBufferMinutes),
+    next.activeWindowEnabled ? 1 : 0,
+    next.activeStart,
+    next.activeEnd,
   );
 
   return getSettings(db);
@@ -93,6 +109,17 @@ export function validateSettings(s) {
   }
 
   if (!Array.isArray(s.areas)) errors.push('Areas must be a list');
+
+  // Active hours. Unlike the lesson time range, a window that crosses midnight
+  // is legitimate (22:00 to 06:00 is eight hours), so there is deliberately no
+  // "start must be before end" rule here.
+  if (!TIME_RE.test(s.activeStart ?? '')) errors.push('Active hours start must be HH:MM');
+  if (!TIME_RE.test(s.activeEnd ?? '')) errors.push('Active hours end must be HH:MM');
+  if (s.activeWindowEnabled && s.activeStart === s.activeEnd) {
+    errors.push(
+      'Active hours start and end are the same. Untick "Only run during these hours" to run all day.',
+    );
+  }
 
   const buffer = Number(s.overrunBufferMinutes);
   if (!Number.isInteger(buffer) || buffer < 0 || buffer > 180) {

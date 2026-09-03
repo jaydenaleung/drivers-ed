@@ -6,6 +6,9 @@ import { recentErrors, clearErrors } from '../errors.js';
 import { getState, STATE_KEYS } from '../db.js';
 import { hydrate } from '../pipeline.js';
 import { sendTestNotification } from '../notify.js';
+import { capacityNote, withinWindow } from '../capacity.js';
+import { observedRateCaps } from '../x/client.js';
+import { nowMinutesInTz } from '../parser/normalize.js';
 import { loginPage, dashboardPage } from './views.js';
 
 const COOKIE_NAME = 'de_session';
@@ -124,6 +127,9 @@ export function createServer(db) {
         dateRangeStart: body.date_range_start || null,
         dateRangeEnd: body.date_range_end || null,
         overrunBufferMinutes: Number.parseInt(body.overrun_buffer_minutes, 10),
+        activeWindowEnabled: body.active_window_enabled === '1',
+        activeStart: body.active_start,
+        activeEnd: body.active_end,
       });
       res.type('html').send(renderDashboard(db, { saved: true }));
     } catch (err) {
@@ -190,12 +196,19 @@ function renderDashboard(db, flash) {
     .all()
     .map(hydrate);
 
+  const windowOpen =
+    !settings.activeWindowEnabled ||
+    withinWindow(nowMinutesInTz(config.timezone), settings.activeStart, settings.activeEnd);
+
   return dashboardPage({
     settings,
     claimed,
     skipped,
     errors: recentErrors(db, 50),
     flash,
+    // Uses the caps X reported on the last poll where it reported any, so the
+    // hours figure is measured rather than assumed once the bot has run.
+    capacity: capacityNote(settings, config.pollIntervalSeconds, observedRateCaps(db)),
     health: {
       // .env is read once at startup, so "did my edit take effect?" is only
       // answerable if the page says when this process started and which file
@@ -208,6 +221,10 @@ function renderDashboard(db, flash) {
       pollIntervalSeconds: config.pollIntervalSeconds,
       dryRun: config.dryRun,
       replayMode: config.postSource === 'replay',
+      timezone: config.timezone,
+      windowOpen,
+      activeStart: settings.activeStart,
+      activeEnd: settings.activeEnd,
     },
   });
 }
