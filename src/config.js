@@ -67,7 +67,12 @@ export const config = {
   port: int(process.env.PORT, 8080),
   host: process.env.HOST || '127.0.0.1',
   databasePath: path.resolve(ROOT, process.env.DATABASE_PATH || './data/driversed.db'),
-  pollIntervalSeconds: int(process.env.POLL_INTERVAL_SECONDS, 10),
+  // 30s, not the 10s this used to default to. Per-window rate limits were never
+  // the problem — 10s is 90 requests per 15 minutes against a measured 10,000.
+  // The daily total is: 10s round the clock is 8,640 requests a day, and ~18,000
+  // in a day is what X refused on 2 Sep 2026. 30s is 2,880 and costs at most 27
+  // seconds of reaction time on an account that posts a few times a day.
+  pollIntervalSeconds: int(process.env.POLL_INTERVAL_SECONDS, 30),
   // Hard ceiling on billable X reads per UTC day. X bills per post RETURNED,
   // so a stuck since_id cursor could in principle re-read the same batch on
   // every poll. At the default 10s interval that is 8,640 polls a day, so this
@@ -81,8 +86,14 @@ export const config = {
   // so the limit that actually stopped us is not one we can look up. Enforcing
   // our own is the only cap we can be sure of, and hitting it fails safe: the
   // bot stops and says so, rather than being cut off by X without warning.
-  // 10,000 sits below the level that was refused; raise it only with evidence.
-  maxRequestsPerDay: int(process.env.MAX_REQUESTS_PER_DAY, 10000),
+  //
+  // 6,000 is roughly half the lowest count that was refused (~12,700 in the UTC
+  // day of the cutoff), which leaves a real margin under a limit we cannot see.
+  // It is also deliberately NOT 10,000: this token's measured 15-minute limit is
+  // 10,000, and having both numbers be 10,000 made the two lines of `npm run
+  // caps` read as one thing. Any sane configuration fits — a 13-hour window at
+  // 30s is 1,560 requests a day, at 10s it is 4,680.
+  maxRequestsPerDay: int(process.env.MAX_REQUESTS_PER_DAY, 6000),
   timezone: process.env.TIMEZONE || 'America/New_York',
 
   dryRun: bool(process.env.DRY_RUN, true),

@@ -34,15 +34,19 @@ import { timeToMinutes } from './parser/normalize.js';
  */
 
 /**
- * Caps X publishes for GET /2/users/:id/tweets that we have not measured
- * ourselves.
+ * Fallback caps, used only until X reports its own on a live response.
  *
- * CORRECTION (3 Sep 2026): this said 10,000 per 15 minutes, which was wrong.
- * X's rate-limit documentation gives 3,500/15min per app and 900/15min per
- * user for this endpoint. An app-only bearer token is subject to the per-app
- * figure. The error did not change any conclusion — 3s polling is 300 requests
- * per 15 minutes, comfortably under either — but a wrong number in a note whose
- * whole job is to be trusted is worse than no number.
+ * The documentation and the live API disagree here. X's rate-limit docs give
+ * 3,500/15min per app for GET /2/users/:id/tweets, but the bearer token this
+ * bot uses measured `x-rate-limit-limit: 10000` on a real response. The
+ * measurement wins — it is this token, this endpoint, right now — which is why
+ * an observed cap always overrides anything in this list.
+ *
+ * The conservative documented figure is kept as the fallback deliberately: if
+ * it is wrong it can only understate capacity, and understating is the safe
+ * direction for a fallback that applies before the first poll of a fresh
+ * install. Neither figure binds in practice — 3-second polling is 300 requests
+ * per 15 minutes.
  */
 export const DOCUMENTED_CAPS = [
   {
@@ -129,7 +133,9 @@ export function budgetCap(maxRequestsPerDay) {
   if (!Number.isFinite(maxRequestsPerDay) || maxRequestsPerDay <= 0) return null;
   return {
     id: 'own_daily_budget',
-    label: 'Your daily request budget',
+    // Says "self-imposed" on purpose: this is the only line in the capacity
+    // table that is not one of X's limits, and it must never be mistaken for one.
+    label: 'Daily request budget (self-imposed)',
     limit: maxRequestsPerDay,
     windowSeconds: 86400,
     source: 'your setting',

@@ -12,7 +12,8 @@
 import { config } from '../config.js';
 import { openDatabase, getState, STATE_KEYS } from '../db.js';
 import { observedRateCaps, requestsToday, readsToday } from '../x/client.js';
-import { pollingCapacity, DOCUMENTED_CAPS } from '../capacity.js';
+import { pollingCapacity, DOCUMENTED_CAPS, withinWindow } from '../capacity.js';
+import { nowMinutesInTz } from '../parser/normalize.js';
 import { getSettings } from '../settings.js';
 
 const db = openDatabase();
@@ -39,7 +40,7 @@ if (caps.length === 0) {
     const window = c.windowSeconds >= 3600 ? `${c.windowSeconds / 3600}h` : `${c.windowSeconds / 60}min`;
     const remaining = c.remaining === null || c.remaining === undefined ? '?' : c.remaining;
     console.log(
-      `    ${c.label.padEnd(28)} ${String(c.limit).padStart(7)} per ${window.padEnd(6)} ` +
+      `    ${c.label.padEnd(36)} ${String(c.limit).padStart(7)} per ${window.padEnd(6)} ` +
         `remaining ${remaining}`,
     );
   }
@@ -48,14 +49,17 @@ if (caps.length === 0) {
 // --- what that means at the current poll interval ---------------------------
 
 const capacity = pollingCapacity(config.pollIntervalSeconds, caps, config.maxRequestsPerDay);
-console.log(`\n  At POLL_INTERVAL_SECONDS=${config.pollIntervalSeconds}:`);
+console.log(
+  `\n  At POLL_INTERVAL_SECONDS=${config.pollIntervalSeconds} ` +
+    `(${(86400 / config.pollIntervalSeconds).toLocaleString('en-US')} requests/day round the clock):`,
+);
 
 for (const c of capacity.caps) {
   const verdict = c.binds
     ? `BINDS — allows ${(Math.round(c.hoursPerDay * 10) / 10).toFixed(1)}h/day of polling`
     : 'does not bind';
   console.log(
-    `    ${c.label.padEnd(28)} we would use ${String(Math.round(c.requestsPerWindow)).padStart(7)} ` +
+    `    ${c.label.padEnd(36)} we would use ${String(Math.round(c.requestsPerWindow)).padStart(7)} ` +
       `of ${String(c.limit).padStart(7)} — ${verdict}  [${c.source}]`,
   );
 }
@@ -67,8 +71,15 @@ console.log(
 );
 
 const settings = getSettings(db);
+const windowOpen =
+  !settings.activeWindowEnabled ||
+  withinWindow(nowMinutesInTz(config.timezone), settings.activeStart, settings.activeEnd);
+
 if (settings.activeWindowEnabled) {
-  console.log(`     Your active window asks for ${settings.activeStart}–${settings.activeEnd}.`);
+  console.log(
+    `     Your active window asks for ${settings.activeStart}–${settings.activeEnd} ` +
+      `(${config.timezone}) — currently ${windowOpen ? 'OPEN' : 'CLOSED'}.`,
+  );
 }
 
 // --- the last thing that went wrong -----------------------------------------
@@ -83,7 +94,16 @@ const lastOk = getState(db, STATE_KEYS.LAST_POLL_OK_AT);
 console.log('\n  Last successful poll :', lastOk ?? 'never');
 if (lastOk) {
   const hours = (Date.now() - new Date(lastOk).getTime()) / 3600000;
-  if (hours > 1) console.log(`                         (${hours.toFixed(1)} hours ago — the bot may be blind)`);
+  if (hours > 1) {
+    // A stale poll outside the active window is the window working, not a
+    // fault. Calling it "may be blind" either way trains you to ignore the
+    // one message that is supposed to mean something is wrong.
+    console.log(
+      `                         (${hours.toFixed(1)} hours ago — ${
+        windowOpen ? 'THE BOT MAY BE BLIND' : 'expected: outside active hours'
+      })`,
+    );
+  }
 }
 console.log('  Last poll error      :', lastError ?? 'none');
 

@@ -9,6 +9,11 @@ process.env.DASHBOARD_PASSWORD = 'correct-horse-battery-staple';
 process.env.SESSION_SECRET = 'a'.repeat(64);
 process.env.DRY_RUN = 'true';
 process.env.POST_SOURCE = 'replay';
+// Pinned, not left to the default. dotenv does not overwrite an existing value,
+// so setting these here is also what stops a developer's real .env.local from
+// deciding how the capacity assertions below come out.
+process.env.POLL_INTERVAL_SECONDS = '30';
+process.env.MAX_REQUESTS_PER_DAY = '6000';
 
 const { openDatabase, SKIP_REASONS } = await import('../src/db.js');
 const { getSettings, updateSettings } = await import('../src/settings.js');
@@ -348,7 +353,9 @@ test('a shortfall renders the red warning, and no shortfall renders none', async
         {
           id: 'app_24hour',
           label: 'App requests per 24 hours',
-          limit: 2000,
+          // At the 30s interval pinned above, 1,000/day covers 8.3 hours —
+          // short of the 14-hour window, which is what must raise the flag.
+          limit: 1000,
           windowSeconds: 86400,
           source: 'observed',
         },

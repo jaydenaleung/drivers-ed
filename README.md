@@ -594,14 +594,15 @@ question than the one asked.
 
 ## 8. Design notes worth knowing
 
-**Poll interval defaults to 10s.** X documents 3,500 requests per 15 minutes per app for
-`GET /2/users/:id/tweets` (900 per user); an app-only bearer token gets the per-app figure. A
-10-second loop uses 90 of them. Polls that return nothing are not billed, so faster polling
-costs no money.
+**Poll interval defaults to 30s.** Per-window rate limits were never the constraint: this
+bot's token reports `x-rate-limit-limit: 10000` per 15 minutes on a live response, and even
+3-second polling is 300 of those. The *daily total* is what matters — see below.
 
-> **Corrected 3 Sep 2026.** This previously said 10,000 per 15 minutes, which was wrong. It did
-> not change any conclusion — even 3-second polling is 300 requests per 15 minutes — but the
-> number was not one X publishes.
+> **Two corrections, 3 Sep 2026.** This first said 10,000 per 15 minutes. I then "corrected" it
+> to the 3,500/15min in X's published docs — and the live response header came back saying
+> 10,000, so the original figure was right and the correction was wrong. The docs and this token
+> disagree; the measurement wins, and `npm run caps` shows the measured value. Neither number
+> ever bound in practice.
 
 **Money is not the constraint. Access is.** On 2 Sep 2026 the bot ran at 3 seconds for about
 15 hours, made roughly 18,000 requests, and X answered `usage cap exceeded`. Nearly every one of
@@ -610,7 +611,7 @@ never came close to firing — but the bot was cut off and went blind for 14 hou
 document a per-day request cap for this endpoint, so the limit that stopped it is not one that
 can be looked up.
 
-`MAX_REQUESTS_PER_DAY` (default 10,000) is the answer to that: a budget we enforce ourselves,
+`MAX_REQUESTS_PER_DAY` (default 6,000) is the answer to that: a budget we enforce ourselves,
 below the level that was refused. Hitting it pauses polling until UTC midnight with a visible
 banner, which is strictly better than X deciding to stop answering. `npm run caps` shows the
 budget, today's usage, and whatever cap figures X has actually reported in its response headers.
