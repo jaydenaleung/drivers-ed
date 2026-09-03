@@ -35,6 +35,11 @@ export const config = {
   x: {
     bearerToken: process.env.X_BEARER_TOKEN ?? '',
     accountUserId: process.env.X_ACCOUNT_USER_ID ?? '',
+    // Deadline on every X request. Without one, a hung connection stalls the
+    // whole polling loop silently — no throw, so no log and no retry. Twenty
+    // seconds is many times the normal response time, so a request that exceeds
+    // it is not slow, it is stuck.
+    requestTimeoutMs: int(process.env.X_REQUEST_TIMEOUT_SECONDS, 20) * 1000,
   },
 
   email: {

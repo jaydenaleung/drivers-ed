@@ -160,13 +160,19 @@ function healthBanner({
     // gets the loudest possible treatment rather than sitting in the error feed.
     const isCredits = /credit/i.test(lastPollError);
     const isCap = /read cap/i.test(lastPollError);
+    // A usage cap reads as an ordinary 429 but lasts for a day or a month. On
+    // 2 Sep 2026 it blinded the bot for 14 hours while the dashboard called it
+    // "rate limited", which sounds momentary.
+    const isUsageCap = /usage cap/i.test(lastPollError);
     parts.push(
       `<div class="banner bad">${
         isCredits
           ? 'X API CREDITS EXHAUSTED — the bot cannot see new posts until you top up. '
-          : isCap
-            ? 'DAILY SPEND CAP HIT — polling paused until UTC midnight to stop runaway cost. '
-            : 'Last poll failed: '
+          : isUsageCap
+            ? 'X USAGE CAP EXCEEDED — this is NOT the per-minute rate limit and will not clear in a few seconds. The bot is blind to new posts until the cap resets. '
+            : isCap
+              ? 'DAILY SPEND CAP HIT — polling paused until UTC midnight to stop runaway cost. '
+              : 'Last poll failed: '
       }${esc(lastPollError)}</div>`,
     );
   }
@@ -191,7 +197,10 @@ function healthBanner({
     parts.push(`<div class="banner warn">No successful poll yet.</div>`);
   } else if (stale) {
     parts.push(
-      `<div class="banner bad">Last successful poll was ${esc(ago(lastPollAt))} — the loop may have stopped.</div>`,
+      `<div class="banner bad">BLIND for ${esc(ago(lastPollAt))} — no successful poll since then, so
+        new posts are not being seen. Nothing is lost permanently: the bot remembers the last post
+        it read and asks for everything newer once polling recovers, so the backlog arrives in one
+        batch. But a lesson claimed in the meantime will already be gone.</div>`,
     );
   } else {
     parts.push(

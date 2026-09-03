@@ -14,7 +14,8 @@
     "parse": "node src/tools/parse-one.js",
     "preflight": "node src/tools/preflight.js",
     "env-check": "node src/tools/env-check.js",
-    "live-test": "node src/tools/live-test.js"
+    "live-test": "node src/tools/live-test.js",
+    "caps": "node src/tools/caps.js"
   },
   "repository": {
     "type": "git",

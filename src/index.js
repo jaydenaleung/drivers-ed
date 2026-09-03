@@ -1,7 +1,13 @@
 import { config, validateConfig, configWarnings, haikuEnabled } from './config.js';
-import { openDatabase, setState, STATE_KEYS } from './db.js';
+import { openDatabase, getState, setState, STATE_KEYS } from './db.js';
 import { logError, STAGES } from './errors.js';
-import { fetchNewPosts, CreditsDepletedError, RateLimitedError, SpendCapError } from './x/client.js';
+import {
+  fetchNewPosts,
+  CreditsDepletedError,
+  RateLimitedError,
+  SpendCapError,
+  UsageCapError,
+} from './x/client.js';
 import { fetchReplayPosts } from './x/replay.js';
 import { ingestPost, runClaimSweep } from './pipeline.js';
 import { createServer } from './web/server.js';
@@ -103,14 +109,18 @@ async function cycle() {
 
     // Credit exhaustion and rate limiting are not transient — hammering makes
     // them worse and, for credits, costs nothing but noise. Back off hard.
-    if (err instanceof CreditsDepletedError) return { backoffSeconds: 300 };
-    if (err instanceof RateLimitedError) return { backoffSeconds: 60 };
+    if (err instanceof CreditsDepletedError) return { windowOpen, backoffSeconds: 300 };
+    // A usage cap is measured in days or months, not minutes. Retrying every
+    // minute against it is pure noise; ten minutes still notices the reset
+    // promptly without filling the journal with the same line 800 times.
+    if (err instanceof UsageCapError) return { windowOpen, backoffSeconds: 600 };
+    if (err instanceof RateLimitedError) return { windowOpen, backoffSeconds: 60 };
     // The cap clears at UTC midnight; re-checking every 10 minutes is plenty
     // and keeps the log readable.
-    if (err instanceof SpendCapError) return { backoffSeconds: 600 };
+    if (err instanceof SpendCapError) return { windowOpen, backoffSeconds: 600 };
 
     // Exponential backoff on anything else, capped at a minute.
-    return { backoffSeconds: Math.min(60, 2 ** Math.min(consecutiveFailures, 6)) };
+    return { windowOpen, backoffSeconds: Math.min(60, 2 ** Math.min(consecutiveFailures, 6)) };
   }
 
   if (batch.primed) {
@@ -135,7 +145,36 @@ async function cycle() {
     logError(db, STAGES.MATCH, err);
   }
 
-  return { backoffSeconds: config.pollIntervalSeconds };
+  return { windowOpen, backoffSeconds: config.pollIntervalSeconds };
+}
+
+/**
+ * Says out loud that the bot is not seeing anything.
+ *
+ * On 2 Sep 2026 the bot went 14.6 hours without a successful poll and the
+ * journal contained NOTHING for that whole period — the last line was a 429 and
+ * the next was a manual restart. Six real posts went past unseen. Silence is
+ * indistinguishable from working normally, which made a total outage look like
+ * a quiet day. So: while the active window is open and polls are not landing,
+ * complain on a schedule.
+ */
+const BLIND_WARN_AFTER_MS = 15 * 60 * 1000;
+let lastBlindWarnAt = 0;
+
+function warnIfBlind(windowOpen) {
+  if (!windowOpen) return;
+
+  const lastOk = getState(db, STATE_KEYS.LAST_POLL_OK_AT);
+  const blindFor = lastOk ? Date.now() - new Date(lastOk).getTime() : Infinity;
+  if (!(blindFor > BLIND_WARN_AFTER_MS)) return;
+  if (Date.now() - lastBlindWarnAt < BLIND_WARN_AFTER_MS) return;
+
+  lastBlindWarnAt = Date.now();
+  const forHuman = Number.isFinite(blindFor) ? `${(blindFor / 3600000).toFixed(1)}h` : 'the whole run';
+  console.error(
+    `[blind] No successful poll for ${forHuman}. The bot is NOT seeing new posts. ` +
+      `Last error: ${getState(db, STATE_KEYS.LAST_POLL_ERROR) ?? 'none recorded'}`,
+  );
 }
 
 async function loop() {
@@ -144,6 +183,7 @@ async function loop() {
     try {
       const result = await cycle();
       waitSeconds = result.backoffSeconds;
+      warnIfBlind(result.windowOpen);
     } catch (err) {
       // Nothing in the pipeline is allowed to kill the loop (§3).
       logError(db, STAGES.MATCH, err, { note: 'unexpected error in cycle' });
