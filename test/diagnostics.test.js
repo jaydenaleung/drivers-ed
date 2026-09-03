@@ -1,0 +1,142 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import {
+  LATE_MINUTES,
+  buildActivity,
+  classifyAftermath,
+  typicalLagSeconds,
+  indexingDelaySeconds,
+} from '../src/diagnostics.js';
+
+const at = (iso) => new Date(iso);
+
+/** A post read `lagMin` after publication. */
+function post(publishedIso, lagMin) {
+  const published = at(publishedIso);
+  return { published, seen: new Date(published.getTime() + lagMin * 60000), lagMin };
+}
+
+// ---------------------------------------------------------------------------
+// The rule that was wrong: silence alone proves nothing
+// ---------------------------------------------------------------------------
+
+test('a lone failure followed by a prompt read is a RECOVERY, not a stall', () => {
+  // The real case that disproved the old rule: a Cloudflare 522 at 02:49 on
+  // 2 Sep 2026 appeared exactly once, was followed by silence, and the bot kept
+  // working for hours afterwards. The old tool called this a stopped loop.
+  const failure = at('2026-09-02T02:49:16Z');
+  const healthy = post('2026-09-02T02:59:00Z', 0.2);
+  const activity = buildActivity([healthy], [{ at: failure }]);
+
+  const result = classifyAftermath(failure, activity, []);
+  assert.equal(result.verdict, 'recovered');
+  assert.match(result.detail, /read on time/);
+});
+
+test('a failure followed by silence AND late posts is a stall', () => {
+  const failure = at('2026-09-02T10:37:05Z');
+  // Published during the silence, read 9.3h later when polling resumed.
+  const late = post('2026-09-02T15:55:59Z', 559);
+  const activity = buildActivity([late], [{ at: failure }]);
+
+  const result = classifyAftermath(failure, activity, [late]);
+  assert.equal(result.verdict, 'STALLED');
+  assert.match(result.detail, /14\.6h/);
+  assert.match(result.detail, /1 post\(s\)/);
+});
+
+test('a long quiet stretch with nothing published is explicitly unproven', () => {
+  // An idle night is indistinguishable from a dead process, and saying so is
+  // more useful than guessing either way.
+  const failure = at('2026-09-02T03:00:16Z');
+  const activity = buildActivity([], [{ at: failure }]);
+
+  const result = classifyAftermath(failure, activity, [], at('2026-09-02T09:00:00Z'));
+  assert.equal(result.verdict, 'unproven');
+  assert.match(result.detail, /nothing was published/);
+});
+
+test('an outage later in the day does not incriminate an earlier recovered failure', () => {
+  // The second bug found in testing: scanning every post published after the
+  // error let the 15:55 backlog mark the 03:00 Cloudflare error as a stall,
+  // even though a post had been read on time at 04:20.
+  const early = at('2026-09-02T03:00:16Z');
+  const later = at('2026-09-02T10:37:05Z');
+  const healthy = post('2026-09-02T04:20:00Z', 0.2);
+  const late = post('2026-09-02T15:55:59Z', 559);
+
+  const activity = buildActivity([healthy, late], [{ at: early }, { at: later }]);
+
+  assert.equal(classifyAftermath(early, activity, [late]).verdict, 'recovered');
+  assert.equal(classifyAftermath(later, activity, [late]).verdict, 'STALLED');
+});
+
+test('a short gap counts as recovery even with no post to prove it', () => {
+  const failure = at('2026-09-02T10:00:00Z');
+  const next = at('2026-09-02T10:10:00Z');
+  const activity = buildActivity([], [{ at: failure }, { at: next }]);
+
+  const result = classifyAftermath(failure, activity, []);
+  assert.equal(result.verdict, 'recovered');
+  assert.match(result.detail, /10 min/);
+});
+
+test('a failure with nothing after it at all is judged against now', () => {
+  const failure = at('2026-09-02T10:00:00Z');
+  const activity = buildActivity([], [{ at: failure }]);
+
+  const stillQuiet = classifyAftermath(failure, activity, [], at('2026-09-02T10:30:00Z'));
+  assert.equal(stillQuiet.verdict, 'recovered', 'half an hour is not yet evidence of anything');
+
+  const longQuiet = classifyAftermath(failure, activity, [], at('2026-09-03T10:00:00Z'));
+  assert.equal(longQuiet.verdict, 'unproven');
+});
+
+// ---------------------------------------------------------------------------
+// Activity classification
+// ---------------------------------------------------------------------------
+
+test('reads are tagged prompt or late, and errors kept separate', () => {
+  const prompt = post('2026-09-02T04:20:00Z', 0.2);
+  const late = post('2026-09-02T15:55:00Z', 559);
+  const activity = buildActivity([prompt, late], [{ at: at('2026-09-02T10:37:00Z') }]);
+
+  assert.deepEqual(
+    activity.map((a) => a.kind),
+    ['prompt-read', 'error', 'late-read'],
+    'ordered by time, with each kind distinguished',
+  );
+});
+
+test('a read exactly at the late threshold is not yet late', () => {
+  const edge = post('2026-09-02T04:00:00Z', LATE_MINUTES);
+  assert.equal(buildActivity([edge], [])[0].kind, 'prompt-read');
+});
+
+// ---------------------------------------------------------------------------
+// Typical lag
+// ---------------------------------------------------------------------------
+
+test('the typical lag ignores the outage instead of averaging through it', () => {
+  // Six healthy reads at ~12s and six 8-hour ones. A plain median lands between
+  // the clusters and describes neither — it reported 26,153s in testing.
+  const healthy = Array.from({ length: 6 }, (_, i) => post(`2026-09-0${i + 1}T04:00:00Z`, 0.2));
+  const late = Array.from({ length: 6 }, (_, i) => post(`2026-09-0${i + 1}T15:00:00Z`, 480));
+
+  const typical = typicalLagSeconds([...healthy, ...late]);
+  assert.equal(typical, 12, 'the healthy cluster is what "typical" means');
+});
+
+test('typical lag is null when nothing was ever read promptly', () => {
+  assert.equal(typicalLagSeconds([post('2026-09-02T15:00:00Z', 480)]), null);
+  assert.equal(typicalLagSeconds([]), null);
+});
+
+test('indexing delay subtracts half the poll interval', () => {
+  // At a 3s interval a post waits 1.5s on average for the next poll, so a 12s
+  // observed lag means X itself took about 10.5s to make the post visible.
+  assert.equal(indexingDelaySeconds(12, 3), 10.5);
+  assert.equal(indexingDelaySeconds(12, 30), -3, 'a negative result means the interval dominates');
+  assert.equal(indexingDelaySeconds(null, 3), null);
+});

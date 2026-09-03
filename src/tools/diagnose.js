@@ -17,19 +17,34 @@
 import { config } from '../config.js';
 import { openDatabase, getState, STATE_KEYS } from '../db.js';
 import { observedRateCaps, requestsToday, readsToday } from '../x/client.js';
+import {
+  LATE_MINUTES,
+  buildActivity,
+  classifyAftermath,
+  typicalLagSeconds,
+  indexingDelaySeconds,
+} from '../diagnostics.js';
 
 const db = openDatabase();
 const arg = process.argv.slice(2).find((a) => /^--days=/.test(a));
 const DAYS = arg ? Number(arg.split('=')[1]) : 14;
 
+/** SQLite writes "YYYY-MM-DD HH:MM:SS" in UTC; X sends ISO-8601 with a Z. */
+function toDate(value) {
+  if (!value) return null;
+  const text = /[TZ]/.test(value) ? value : `${value.replace(' ', 'T')}Z`;
+  const d = new Date(text);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+const fmt = (d) => d.toISOString().slice(0, 19).replace('T', ' ');
+const hoursBetween = (a, b) => (b - a) / 3600000;
+
 console.log(`\ndrivers-ed diagnosis — last ${DAYS} days\n${'='.repeat(60)}`);
 
 // ---------------------------------------------------------------------------
-// 1. Ingestion lag: the hard evidence of a blind period
+// Shared evidence: when each post was published vs when we read it
 // ---------------------------------------------------------------------------
-
-console.log('\n1. INGESTION LAG — how long after publication we first saw each post');
-console.log('   A lag of minutes is normal. Hours means the bot was not polling.\n');
 
 const posts = db
   .prepare(
@@ -41,41 +56,68 @@ const posts = db
   )
   .all(`-${DAYS} days`);
 
-if (posts.length === 0) {
+const lagged = [];
+for (const p of posts) {
+  const published = toDate(p.posted_at);
+  const seen = toDate(p.fetched_at);
+  if (!published || !seen) continue;
+  lagged.push({ ...p, published, seen, lagMin: (seen - published) / 60000 });
+}
+
+const latePosts = lagged.filter((l) => l.lagMin > LATE_MINUTES);
+
+const pollErrors = db
+  .prepare(
+    `SELECT occurred_at, message
+       FROM errors
+      WHERE stage = 'poll' AND occurred_at > datetime('now', ?)
+      ORDER BY occurred_at`,
+  )
+  .all(`-${DAYS} days`)
+  .map((e) => ({ ...e, at: toDate(e.occurred_at) }))
+  .filter((e) => e.at);
+
+// Everything the bot is known to have done, in order. Used to measure silence.
+const activity = buildActivity(lagged, pollErrors);
+
+const whatFollowed = (at) => classifyAftermath(at, activity, latePosts);
+
+// ---------------------------------------------------------------------------
+// 1. Ingestion lag
+// ---------------------------------------------------------------------------
+
+console.log('\n1. INGESTION LAG — how long after publication we first saw each post');
+console.log('   A lag of seconds is normal. Hours means the bot was not polling.\n');
+
+if (lagged.length === 0) {
   console.log('   No posts recorded in this period.');
 } else {
-  const lagged = [];
-  for (const p of posts) {
-    // SQLite stores fetched_at as "YYYY-MM-DD HH:MM:SS" in UTC.
-    const published = new Date(p.posted_at);
-    const seen = new Date(`${p.fetched_at.replace(' ', 'T')}Z`);
-    const lagMin = (seen - published) / 60000;
-    if (Number.isFinite(lagMin)) lagged.push({ ...p, published, seen, lagMin });
-  }
+  const promptCount = lagged.length - latePosts.length;
+  console.log(`   ${lagged.length} posts, ${promptCount} read promptly, ${latePosts.length} late`);
 
-  const bad = lagged.filter((l) => l.lagMin > 30).sort((a, b) => b.lagMin - a.lagMin);
-  const median = lagged.length
-    ? [...lagged].sort((a, b) => a.lagMin - b.lagMin)[Math.floor(lagged.length / 2)].lagMin
-    : 0;
-
-  console.log(`   ${lagged.length} posts, median lag ${median.toFixed(1)} min`);
-
-  if (bad.length === 0) {
-    console.log('   No post was seen more than 30 minutes late. No blind period detected.');
-  } else {
-    console.log(`\n   ${bad.length} post(s) seen more than 30 minutes late:\n`);
-    console.log(`   ${'published (UTC)'.padEnd(21)}${'first seen (UTC)'.padEnd(21)}late by`);
-    for (const l of bad.slice(0, 25)) {
+  const typical = typicalLagSeconds(lagged);
+  if (typical !== null) {
+    console.log(`   Typical lag when working: ${typical.toFixed(0)}s`);
+    const xDelay = indexingDelaySeconds(typical, config.pollIntervalSeconds);
+    if (promptCount >= 5 && xDelay > 1) {
       console.log(
-        `   ${l.published.toISOString().slice(0, 19).replace('T', ' ').padEnd(21)}` +
-          `${l.seen.toISOString().slice(0, 19).replace('T', ' ').padEnd(21)}` +
-          `${(l.lagMin / 60).toFixed(1)}h`,
+        `   Roughly ${xDelay.toFixed(0)}s of that is X's own indexing delay rather than the\n` +
+          `   poll interval, so halving the interval would save at most ${(config.pollIntervalSeconds / 2).toFixed(0)}s.`,
       );
     }
-    // Posts read in the same second, all long overdue, is the signature of a
-    // backlog arriving at once when polling resumed.
+  }
+
+  if (latePosts.length === 0) {
+    console.log(`   No post was seen more than ${LATE_MINUTES} minutes late. No blind period detected.`);
+  } else {
+    console.log(`\n   ${latePosts.length} post(s) seen more than ${LATE_MINUTES} minutes late:\n`);
+    console.log(`   ${'published (UTC)'.padEnd(21)}${'first seen (UTC)'.padEnd(21)}late by`);
+    for (const l of [...latePosts].sort((a, b) => b.lagMin - a.lagMin).slice(0, 25)) {
+      console.log(`   ${fmt(l.published).padEnd(21)}${fmt(l.seen).padEnd(21)}${(l.lagMin / 60).toFixed(1)}h`);
+    }
+
     const byFetch = new Map();
-    for (const l of bad) {
+    for (const l of latePosts) {
       const key = l.seen.toISOString().slice(0, 16);
       byFetch.set(key, (byFetch.get(key) ?? 0) + 1);
     }
@@ -88,70 +130,87 @@ if (posts.length === 0) {
 }
 
 // ---------------------------------------------------------------------------
-// 2. Poll failures
+// 2. Poll failures, each judged by what actually followed it
 // ---------------------------------------------------------------------------
 
-console.log(`\n2. POLL FAILURES — grouped by message\n`);
+console.log(`\n2. POLL FAILURES — and whether the bot came back\n`);
 
-const grouped = db
-  .prepare(
-    `SELECT message, COUNT(*) n, MIN(occurred_at) first_at, MAX(occurred_at) last_at
-       FROM errors
-      WHERE stage = 'poll' AND occurred_at > datetime('now', ?)
-      GROUP BY message
-      ORDER BY MAX(occurred_at) DESC`,
-  )
-  .all(`-${DAYS} days`);
-
-if (grouped.length === 0) {
+if (pollErrors.length === 0) {
   console.log('   No poll failures recorded.');
 } else {
-  for (const g of grouped) {
-    const oneLine = g.message.replace(/\s+/g, ' ').slice(0, 150);
-    console.log(`   x${String(g.n).padStart(5)}  ${g.first_at} -> ${g.last_at}`);
-    console.log(`          ${oneLine}\n`);
+  // Group identical messages, but judge the LAST occurrence of each: that is
+  // the one whose aftermath tells us whether the bot recovered.
+  const groups = new Map();
+  for (const e of pollErrors) {
+    const key = e.message;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(e);
   }
+
+  const ordered = [...groups.entries()].sort(
+    (a, b) => b[1][b[1].length - 1].at - a[1][a[1].length - 1].at,
+  );
+
+  for (const [message, occurrences] of ordered) {
+    const last = occurrences[occurrences.length - 1];
+    const first = occurrences[0];
+    const { verdict, detail } = whatFollowed(last.at);
+
+    const label =
+      verdict === 'STALLED'
+        ? 'STALLED — the loop stopped'
+        : verdict === 'recovered'
+          ? 'recovered'
+          : 'no evidence either way';
+
+    console.log(
+      `   x${String(occurrences.length).padStart(5)}  ${first.occurred_at}` +
+        (occurrences.length > 1 ? ` -> ${last.occurred_at}` : ''),
+    );
+    console.log(`          ${message.replace(/\s+/g, ' ').slice(0, 150)}`);
+    console.log(`          after the last one: ${label} (${detail})`);
+    if (occurrences.length > 1) {
+      const spacing = (hoursBetween(first.at, last.at) * 3600) / (occurrences.length - 1);
+      console.log(`          retried ${occurrences.length} times, ~${spacing.toFixed(0)}s apart — backoff was running`);
+    }
+    console.log('');
+  }
+
   console.log(
-    '   A failure that appears ONCE and is then followed by silence did not\n' +
-      '   retry — the loop stopped rather than backing off. A failure repeating\n' +
-      '   every 60-600s is the backoff working as intended.',
+    '   How to read this: a lone failure followed by silence usually means the\n' +
+      '   RETRY WORKED — a successful poll that finds nothing logs nothing, so an\n' +
+      '   idle stretch looks identical to a dead process. Only the combination of\n' +
+      '   a long silence AND posts published during it that arrived late proves\n' +
+      '   the loop stopped. That conjunction is what "STALLED" above means.',
   );
 }
 
 // ---------------------------------------------------------------------------
-// 3. Silence: periods with neither a success nor a logged failure
+// 3. Silence, classified the same way
 // ---------------------------------------------------------------------------
 
 console.log(`\n3. GAPS IN THE RECORD\n`);
 
-const marks = db
-  .prepare(
-    `SELECT occurred_at AS at FROM errors WHERE occurred_at > datetime('now', ?)
-      UNION ALL
-     SELECT fetched_at AS at FROM posts_seen WHERE fetched_at > datetime('now', ?)
-      ORDER BY at`,
-  )
-  .all(`-${DAYS} days`, `-${DAYS} days`);
-
-if (marks.length < 2) {
+if (activity.length < 2) {
   console.log('   Not enough recorded activity to measure gaps.');
 } else {
   const gaps = [];
-  for (let i = 1; i < marks.length; i += 1) {
-    const a = new Date(`${marks[i - 1].at.replace(' ', 'T')}Z`);
-    const b = new Date(`${marks[i].at.replace(' ', 'T')}Z`);
-    const hours = (b - a) / 3600000;
-    if (hours > 2) gaps.push({ from: marks[i - 1].at, to: marks[i].at, hours });
+  for (let i = 1; i < activity.length; i += 1) {
+    const hours = hoursBetween(activity[i - 1].at, activity[i].at);
+    if (hours > 2) gaps.push({ from: activity[i - 1].at, to: activity[i].at, hours });
   }
 
   if (gaps.length === 0) {
     console.log('   No gap longer than 2 hours between recorded events.');
   } else {
-    console.log('   Periods with nothing recorded at all. Some are just quiet');
-    console.log('   nights or closed active-hours windows; a long one that ENDS');
-    console.log('   with a backlog above is an outage.\n');
     for (const g of gaps.sort((x, y) => y.hours - x.hours).slice(0, 15)) {
-      console.log(`     ${g.from} -> ${g.to}   ${g.hours.toFixed(1)}h`);
+      // Late posts read at the END of the gap are what turn silence into proof.
+      const overdue = latePosts.filter((l) => l.published >= g.from && l.published <= g.to);
+      const tag = overdue.length
+        ? `OUTAGE — ${overdue.length} post(s) published during it, all read at the end`
+        : 'probably idle — nothing was published, so nothing was missed';
+      console.log(`     ${fmt(g.from)} -> ${fmt(g.to)}   ${g.hours.toFixed(1)}h`);
+      console.log(`       ${tag}\n`);
     }
   }
 }
