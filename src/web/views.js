@@ -257,6 +257,19 @@ function capacityNoteHtml(cap, timezone) {
          No window set — the bot polls around the clock.
        </p>`;
 
+  // The figure that was missing on 2 Sep. Roughly 18,000 requests in a day
+  // ended in "usage cap exceeded", and nothing on this page said how many
+  // requests the settings implied.
+  const spend = `<p class="indent" style="margin:.45rem 0 0">
+      That window makes <strong>${esc(Number(cap.requestsInWindow ?? 0).toLocaleString('en-US'))}</strong>
+      requests a day${
+        cap.requestsToday === undefined
+          ? ''
+          : ` · <strong>${esc(Number(cap.requestsToday).toLocaleString('en-US'))}</strong> used so far today
+              (budget ${esc(Number(cap.maxRequestsPerDay ?? 0).toLocaleString('en-US'))}, resets at UTC midnight)`
+      }.
+    </p>`;
+
   const capRows = cap.caps
     .map((c) => {
       const per = c.requestsPerWindow;
@@ -280,13 +293,15 @@ function capacityNoteHtml(cap, timezone) {
     <h3>Polling capacity ${short ? bang : ''}</h3>
     <p style="margin:0">${headline}</p>
     ${comparison}
+    ${spend}
     <ul>
       ${capRows}
       ${unobserved}
       <li style="color:var(--muted)">Not counted above, because they cap money rather than hours:
         X bills per post <em>returned</em>, so polls that find nothing are free and cost nothing
         no matter how often they run. Your daily read cap and prepaid credit balance are unaffected
-        by the poll interval.</li>
+        by the poll interval. <strong>Access is a different matter</strong> — the cap that stopped
+        the bot on 2 Sep counted requests, nearly all of which returned nothing and cost nothing.</li>
     </ul>
     <p style="margin:.5rem 0 0;color:var(--muted)">Active hours are ${esc(timezone)} local time.</p>
   </div>`;

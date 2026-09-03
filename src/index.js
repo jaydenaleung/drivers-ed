@@ -7,6 +7,7 @@ import {
   RateLimitedError,
   SpendCapError,
   UsageCapError,
+  RequestBudgetError,
 } from './x/client.js';
 import { fetchReplayPosts } from './x/replay.js';
 import { ingestPost, runClaimSweep } from './pipeline.js';
@@ -118,6 +119,8 @@ async function cycle() {
     // The cap clears at UTC midnight; re-checking every 10 minutes is plenty
     // and keeps the log readable.
     if (err instanceof SpendCapError) return { windowOpen, backoffSeconds: 600 };
+    // Same story: the budget clears at UTC midnight, so poll the clock, not X.
+    if (err instanceof RequestBudgetError) return { windowOpen, backoffSeconds: 600 };
 
     // Exponential backoff on anything else, capped at a minute.
     return { windowOpen, backoffSeconds: Math.min(60, 2 ** Math.min(consecutiveFailures, 6)) };

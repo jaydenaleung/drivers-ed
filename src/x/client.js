@@ -10,9 +10,13 @@ import { capsFromHeaders } from '../capacity.js';
  * "What is untested".
  *
  * Billing note: X bills per *resource returned*, so a poll that finds nothing
- * new costs nothing. The rate limit on this endpoint is 10,000 requests per
- * 15 minutes for an app-only bearer token, so even a 5-second interval (180
- * requests) uses under 2% of it.
+ * new costs nothing in money.
+ *
+ * Rate limits are a separate matter from billing. X documents 3,500 requests
+ * per 15 minutes per app for this endpoint (900 per user); an app-only bearer
+ * gets the per-app figure, so even a 3-second interval (300 requests) is well
+ * under it. That is NOT the cap that stopped this bot on 2 Sep 2026 — see
+ * RequestBudgetError below.
  */
 
 const API_BASE = 'https://api.x.com/2';
@@ -73,6 +77,22 @@ export class SpendCapError extends Error {
   }
 }
 
+/**
+ * Thrown when today's REQUESTS hit MAX_REQUESTS_PER_DAY.
+ *
+ * Deliberately not the same as SpendCapError: that one guards money (posts
+ * returned), this one guards access (requests made). On 2 Sep 2026 the money
+ * guard would never have fired — almost every request returned nothing and so
+ * cost nothing — and X cut the bot off anyway.
+ */
+export class RequestBudgetError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'RequestBudgetError';
+    this.isRequestBudget = true;
+  }
+}
+
 /** X's own billing window is a UTC day, so count against the same boundary. */
 function utcDay(now = new Date()) {
   return now.toISOString().slice(0, 10);
@@ -112,6 +132,21 @@ export function readsToday(db, now = new Date()) {
   return Number(getState(db, STATE_KEYS.READS_COUNT, '0')) || 0;
 }
 
+/** Requests attempted today, whether or not they returned anything. */
+export function requestsToday(db, now = new Date()) {
+  const day = utcDay(now);
+  if (getState(db, STATE_KEYS.REQUESTS_DAY) !== day) return 0;
+  return Number(getState(db, STATE_KEYS.REQUESTS_COUNT, '0')) || 0;
+}
+
+function recordRequest(db, now = new Date()) {
+  const day = utcDay(now);
+  const current = requestsToday(db, now);
+  setState(db, STATE_KEYS.REQUESTS_DAY, day);
+  setState(db, STATE_KEYS.REQUESTS_COUNT, String(current + 1));
+  return current + 1;
+}
+
 /** Adds to today's tally, rolling the counter over at UTC midnight. */
 export function recordReads(db, count, now = new Date()) {
   const day = utcDay(now);
@@ -147,6 +182,21 @@ export async function fetchNewPosts(db, { fetchImpl = fetch, now = new Date() } 
     );
   }
 
+  // Request budget, separate from the spend guard above. The 2 Sep cap counted
+  // REQUESTS, nearly all of which returned nothing and so cost nothing — the
+  // money guard above would never have fired. Stopping ourselves here is the
+  // difference between a visible pause and X blinding the bot for 14 hours.
+  const requestsUsed = requestsToday(db, now);
+  if (requestsUsed >= config.maxRequestsPerDay) {
+    throw new RequestBudgetError(
+      `Daily request budget reached: ${requestsUsed}/${config.maxRequestsPerDay} requests today. ` +
+        `Polling is paused until UTC midnight. On 2 Sep 2026 about 18,000 requests in a day ended ` +
+        `in X returning "usage cap exceeded" and the bot went blind for 14 hours, so this budget ` +
+        `stops short of that. Slow POLL_INTERVAL_SECONDS or narrow the active window rather than ` +
+        `raising MAX_REQUESTS_PER_DAY.`,
+    );
+  }
+
   const sinceId = getState(db, STATE_KEYS.SINCE_ID);
   const isFirstRun = !sinceId;
 
@@ -162,6 +212,11 @@ export async function fetchNewPosts(db, { fetchImpl = fetch, now = new Date() } 
   // That is exactly the 14-hour outage on 2 Sep 2026 — the last log line was a
   // 429, and then silence until a manual restart, while six real posts went by.
   // Every request now has a deadline it cannot outlive.
+  // Counted before the call, not after: a request that times out or errors
+  // still consumed quota at X's end, and undercounting is how you sail past a
+  // cap you thought you were under.
+  recordRequest(db, now);
+
   let response;
   try {
     response = await fetchImpl(url.toString(), {

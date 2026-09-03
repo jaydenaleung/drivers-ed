@@ -11,7 +11,7 @@
  */
 import { config } from '../config.js';
 import { openDatabase, getState, STATE_KEYS } from '../db.js';
-import { observedRateCaps } from '../x/client.js';
+import { observedRateCaps, requestsToday, readsToday } from '../x/client.js';
 import { pollingCapacity, DOCUMENTED_CAPS } from '../capacity.js';
 import { getSettings } from '../settings.js';
 
@@ -47,7 +47,7 @@ if (caps.length === 0) {
 
 // --- what that means at the current poll interval ---------------------------
 
-const capacity = pollingCapacity(config.pollIntervalSeconds, caps);
+const capacity = pollingCapacity(config.pollIntervalSeconds, caps, config.maxRequestsPerDay);
 console.log(`\n  At POLL_INTERVAL_SECONDS=${config.pollIntervalSeconds}:`);
 
 for (const c of capacity.caps) {
@@ -72,6 +72,10 @@ if (settings.activeWindowEnabled) {
 }
 
 // --- the last thing that went wrong -----------------------------------------
+
+console.log('\n  Today (UTC day, resets at midnight UTC):');
+console.log(`    requests made        ${requestsToday(db).toLocaleString('en-US')} / ${config.maxRequestsPerDay.toLocaleString('en-US')} budget`);
+console.log(`    billable post reads  ${readsToday(db).toLocaleString('en-US')} / ${config.maxPostsPerDay.toLocaleString('en-US')} cap  ($${(readsToday(db) * 0.005).toFixed(2)})`);
 
 const lastError = getState(db, STATE_KEYS.LAST_POLL_ERROR);
 const lastOk = getState(db, STATE_KEYS.LAST_POLL_OK_AT);

@@ -33,12 +33,22 @@ import { timeToMinutes } from './parser/normalize.js';
  * them in would produce a number that looks like an answer but isn't.
  */
 
-/** A cap X publishes for this endpoint that we have not measured ourselves. */
+/**
+ * Caps X publishes for GET /2/users/:id/tweets that we have not measured
+ * ourselves.
+ *
+ * CORRECTION (3 Sep 2026): this said 10,000 per 15 minutes, which was wrong.
+ * X's rate-limit documentation gives 3,500/15min per app and 900/15min per
+ * user for this endpoint. An app-only bearer token is subject to the per-app
+ * figure. The error did not change any conclusion — 3s polling is 300 requests
+ * per 15 minutes, comfortably under either — but a wrong number in a note whose
+ * whole job is to be trusted is worse than no number.
+ */
 export const DOCUMENTED_CAPS = [
   {
     id: 'requests_15min',
-    label: 'Requests per 15 minutes',
-    limit: 10000,
+    label: 'Requests per 15 minutes (per app)',
+    limit: 3500,
     windowSeconds: 900,
     source: 'documented',
   },
@@ -105,13 +115,36 @@ export function capsFromHeaders(headers) {
 }
 
 /**
+ * Our own daily request budget, expressed as a cap so it goes through the same
+ * arithmetic as X's.
+ *
+ * This exists because of the 2 Sep 2026 outage. Roughly 18,000 requests over
+ * ~15 hours of 3-second polling ended in "usage cap exceeded", and X does not
+ * document a per-day request cap for this endpoint — so the limit that actually
+ * stopped the bot is one we cannot look up. A budget we enforce ourselves is
+ * the only cap we can be certain about, and it fails safe: the bot stops
+ * polling and says so, instead of being cut off by X and going blind.
+ */
+export function budgetCap(maxRequestsPerDay) {
+  if (!Number.isFinite(maxRequestsPerDay) || maxRequestsPerDay <= 0) return null;
+  return {
+    id: 'own_daily_budget',
+    label: 'Your daily request budget',
+    limit: maxRequestsPerDay,
+    windowSeconds: 86400,
+    source: 'your setting',
+  };
+}
+
+/**
  * Merges documented caps with anything observed live. An observed cap always
  * wins over the documented one for the same id — X telling us the real number
  * beats a figure copied out of the docs.
  */
-export function mergeCaps(observed = []) {
+export function mergeCaps(observed = [], extra = []) {
   const byId = new Map(DOCUMENTED_CAPS.map((c) => [c.id, c]));
   for (const cap of observed) byId.set(cap.id, cap);
+  for (const cap of extra) if (cap) byId.set(cap.id, cap);
   return [...byId.values()];
 }
 
@@ -138,14 +171,19 @@ export function evaluateCap(cap, pollIntervalSeconds) {
  * @param {number} pollIntervalSeconds
  * @param {Array} observedCaps caps read from live response headers
  */
-export function pollingCapacity(pollIntervalSeconds, observedCaps = []) {
-  const caps = mergeCaps(observedCaps).map((c) => evaluateCap(c, pollIntervalSeconds));
+export function pollingCapacity(pollIntervalSeconds, observedCaps = [], maxRequestsPerDay = null) {
+  const caps = mergeCaps(observedCaps, [budgetCap(maxRequestsPerDay)]).map((c) =>
+    evaluateCap(c, pollIntervalSeconds),
+  );
 
   const binding = caps.filter((c) => c.binds).sort((a, b) => a.dutyCycle - b.dutyCycle);
   const hoursPerDay = caps.length ? 24 * Math.min(...caps.map((c) => c.dutyCycle)) : 24;
 
   return {
     pollIntervalSeconds,
+    // Requests a full day of uninterrupted polling would make. This is the
+    // number that mattered on 2 Sep and was displayed nowhere.
+    requestsPerDay: 86400 / pollIntervalSeconds,
     caps,
     // null means nothing we know about limits the runtime — the honest answer
     // at any sane poll interval given the caps we can currently see.
@@ -195,8 +233,8 @@ export function withinWindow(nowMinutes, startHHMM, endHHMM) {
  * be allowed either way and flagged instead — a bot that polls for eight of your
  * twelve requested hours is still far better than one that refuses to start.
  */
-export function capacityNote(settings, pollIntervalSeconds, observedCaps = []) {
-  const capacity = pollingCapacity(pollIntervalSeconds, observedCaps);
+export function capacityNote(settings, pollIntervalSeconds, observedCaps = [], maxRequestsPerDay = null) {
+  const capacity = pollingCapacity(pollIntervalSeconds, observedCaps, maxRequestsPerDay);
 
   const enabled = Boolean(settings.activeWindowEnabled);
   const requestedHours = enabled ? windowHours(settings.activeStart, settings.activeEnd) : 24;
@@ -209,6 +247,9 @@ export function capacityNote(settings, pollIntervalSeconds, observedCaps = []) {
     ...capacity,
     windowEnabled: enabled,
     requestedHours,
+    // What the configured window will actually spend in a day — the honest
+    // headline, independent of any cap we may or may not know about.
+    requestsInWindow: Math.round((requestedHours * 3600) / pollIntervalSeconds),
     shortfall,
     shortfallHours: shortfall ? requestedHours - capacity.hoursPerDay : 0,
   };

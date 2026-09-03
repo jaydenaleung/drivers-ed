@@ -196,6 +196,11 @@ export const STATE_KEYS = {
   // own billing window is a UTC day, so this matches how the money is spent.
   READS_DAY: 'x_reads_utc_day',
   READS_COUNT: 'x_reads_today',
+  // Requests attempted, counted per UTC day. Distinct from READS_COUNT: X bills
+  // per post returned, but the cap that stopped the bot on 2 Sep counted
+  // requests, of which the vast majority returned nothing and cost nothing.
+  REQUESTS_DAY: 'x_requests_utc_day',
+  REQUESTS_COUNT: 'x_requests_today',
   // Rate caps as X itself reported them on the last response, so the dashboard
   // can show measured numbers instead of figures copied from the docs.
   RATE_CAPS: 'x_rate_caps',

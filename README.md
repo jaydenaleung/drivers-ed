@@ -594,10 +594,26 @@ question than the one asked.
 
 ## 8. Design notes worth knowing
 
-**Poll interval defaults to 10s, not the 15–30s in the original spec.** The X endpoint allows
-10,000 requests per 15 minutes on an app-only token; a 10-second loop uses 90 of them. Polls
-that return nothing are not billed, so faster polling costs nothing but CPU. If you want to go
-to 5s, you still use under 2% of the rate limit.
+**Poll interval defaults to 10s.** X documents 3,500 requests per 15 minutes per app for
+`GET /2/users/:id/tweets` (900 per user); an app-only bearer token gets the per-app figure. A
+10-second loop uses 90 of them. Polls that return nothing are not billed, so faster polling
+costs no money.
+
+> **Corrected 3 Sep 2026.** This previously said 10,000 per 15 minutes, which was wrong. It did
+> not change any conclusion — even 3-second polling is 300 requests per 15 minutes — but the
+> number was not one X publishes.
+
+**Money is not the constraint. Access is.** On 2 Sep 2026 the bot ran at 3 seconds for about
+15 hours, made roughly 18,000 requests, and X answered `usage cap exceeded`. Nearly every one of
+those requests returned nothing, so the *bill* was almost zero and the `MAX_POSTS_PER_DAY` guard
+never came close to firing — but the bot was cut off and went blind for 14 hours. X does not
+document a per-day request cap for this endpoint, so the limit that stopped it is not one that
+can be looked up.
+
+`MAX_REQUESTS_PER_DAY` (default 10,000) is the answer to that: a budget we enforce ourselves,
+below the level that was refused. Hitting it pauses polling until UTC midnight with a visible
+banner, which is strictly better than X deciding to stop answering. `npm run caps` shows the
+budget, today's usage, and whatever cap figures X has actually reported in its response headers.
 
 **The first poll deliberately ignores what it sees.** Otherwise every restart would treat the
 existing timeline as brand new and email about lessons that are long gone.

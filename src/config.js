@@ -73,6 +73,16 @@ export const config = {
   // every poll. At the default 10s interval that is 8,640 polls a day, so this
   // cap is the difference between a rounding error and a nasty surprise.
   maxPostsPerDay: int(process.env.MAX_POSTS_PER_DAY, 400),
+  // Ceiling on REQUESTS per UTC day, separate from maxPostsPerDay above.
+  //
+  // On 2 Sep 2026 about 18,000 requests over ~15 hours of 3-second polling
+  // ended in X returning "usage cap exceeded", and the bot was blind for the
+  // next 14 hours. X does not document a per-day request cap for this endpoint,
+  // so the limit that actually stopped us is not one we can look up. Enforcing
+  // our own is the only cap we can be sure of, and hitting it fails safe: the
+  // bot stops and says so, rather than being cut off by X without warning.
+  // 10,000 sits below the level that was refused; raise it only with evidence.
+  maxRequestsPerDay: int(process.env.MAX_REQUESTS_PER_DAY, 10000),
   timezone: process.env.TIMEZONE || 'America/New_York',
 
   dryRun: bool(process.env.DRY_RUN, true),

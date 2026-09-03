@@ -7,7 +7,7 @@ import { getState, STATE_KEYS } from '../db.js';
 import { hydrate } from '../pipeline.js';
 import { sendTestNotification } from '../notify.js';
 import { capacityNote, withinWindow } from '../capacity.js';
-import { observedRateCaps } from '../x/client.js';
+import { observedRateCaps, requestsToday } from '../x/client.js';
 import { nowMinutesInTz } from '../parser/normalize.js';
 import { loginPage, dashboardPage } from './views.js';
 
@@ -208,7 +208,16 @@ function renderDashboard(db, flash) {
     flash,
     // Uses the caps X reported on the last poll where it reported any, so the
     // hours figure is measured rather than assumed once the bot has run.
-    capacity: capacityNote(settings, config.pollIntervalSeconds, observedRateCaps(db)),
+    capacity: {
+      ...capacityNote(
+        settings,
+        config.pollIntervalSeconds,
+        observedRateCaps(db),
+        config.maxRequestsPerDay,
+      ),
+      requestsToday: requestsToday(db),
+      maxRequestsPerDay: config.maxRequestsPerDay,
+    },
     health: {
       // .env is read once at startup, so "did my edit take effect?" is only
       // answerable if the page says when this process started and which file
