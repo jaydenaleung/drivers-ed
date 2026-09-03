@@ -6,6 +6,8 @@ import {
   buildActivity,
   classifyAftermath,
   typicalLagSeconds,
+  lagFloorSeconds,
+  expectedReactionSeconds,
   indexingDelaySeconds,
 } from '../src/diagnostics.js';
 
@@ -139,4 +141,43 @@ test('indexing delay subtracts half the poll interval', () => {
   assert.equal(indexingDelaySeconds(12, 3), 10.5);
   assert.equal(indexingDelaySeconds(12, 30), -3, 'a negative result means the interval dominates');
   assert.equal(indexingDelaySeconds(null, 3), null);
+});
+
+// ---------------------------------------------------------------------------
+// Reaction time, projected for any interval
+// ---------------------------------------------------------------------------
+
+test('the lag floor is the fastest read, independent of the poll interval', () => {
+  // A post that goes up moments before a poll waits almost nothing for us, so
+  // its lag is very nearly X's indexing delay on its own.
+  const lagged = [post('2026-09-02T04:00:00Z', 0.35), post('2026-09-02T05:00:00Z', 0.2), post('2026-09-02T06:00:00Z', 0.5)];
+  assert.equal(lagFloorSeconds(lagged), 12, 'the minimum prompt lag, in seconds');
+});
+
+test('the floor ignores late reads entirely', () => {
+  const lagged = [post('2026-09-02T04:00:00Z', 0.2), post('2026-09-02T15:00:00Z', 480)];
+  assert.equal(lagFloorSeconds(lagged), 12);
+});
+
+test('the floor is null with nothing measured', () => {
+  assert.equal(lagFloorSeconds([]), null);
+  assert.equal(lagFloorSeconds([post('2026-09-02T15:00:00Z', 480)]), null);
+});
+
+test('reaction time follows the interval without re-measuring', () => {
+  // The whole point: an 11s floor projects to any interval, including ones
+  // this bot has never actually run at.
+  assert.equal(expectedReactionSeconds(11, 3), 12.5);
+  assert.equal(expectedReactionSeconds(11, 30), 26);
+  assert.equal(expectedReactionSeconds(11, 60), 41);
+  assert.equal(expectedReactionSeconds(null, 30), null);
+});
+
+test('going ten times slower costs far less than ten times the delay', () => {
+  // 3s -> 30s is 10x fewer requests for about 13 extra seconds, because X's
+  // indexing delay dominates and is unaffected by either choice.
+  const fast = expectedReactionSeconds(11, 3);
+  const slow = expectedReactionSeconds(11, 30);
+  assert.ok(slow - fast < 14, `expected under 14s of difference, got ${(slow - fast).toFixed(1)}s`);
+  assert.ok(slow < fast * 3, 'nowhere near ten times worse');
 });

@@ -9,6 +9,7 @@ import { sendTestNotification } from '../notify.js';
 import { capacityNote, withinWindow } from '../capacity.js';
 import { observedRateCaps, requestsToday } from '../x/client.js';
 import { nowMinutesInTz } from '../parser/normalize.js';
+import { lagFloorSeconds, expectedReactionSeconds, LATE_MINUTES } from '../diagnostics.js';
 import { loginPage, dashboardPage } from './views.js';
 
 const COOKIE_NAME = 'de_session';
@@ -179,6 +180,38 @@ export function createServer(db) {
   return app;
 }
 
+/**
+ * How quickly the bot actually reacts, measured from its own history.
+ *
+ * The floor is X's indexing delay and is independent of the poll interval, so
+ * the projection below re-derives itself whenever POLL_INTERVAL_SECONDS
+ * changes — including for intervals this bot has never run at.
+ */
+function reactionTime(db) {
+  const rows = db
+    .prepare(
+      `SELECT posted_at, fetched_at FROM posts_seen
+        WHERE posted_at IS NOT NULL
+        ORDER BY id DESC LIMIT 200`,
+    )
+    .all();
+
+  const lagged = [];
+  for (const r of rows) {
+    const published = new Date(r.posted_at);
+    const seen = new Date(`${r.fetched_at.replace(' ', 'T')}Z`);
+    if (Number.isNaN(published.getTime()) || Number.isNaN(seen.getTime())) continue;
+    lagged.push({ lagMin: (seen - published) / 60000 });
+  }
+
+  const floorSeconds = lagFloorSeconds(lagged);
+  return {
+    sampleSize: lagged.filter((l) => l.lagMin <= LATE_MINUTES).length,
+    floorSeconds,
+    expectedSeconds: expectedReactionSeconds(floorSeconds, config.pollIntervalSeconds),
+  };
+}
+
 function renderDashboard(db, flash) {
   const settings = getSettings(db);
 
@@ -217,6 +250,7 @@ function renderDashboard(db, flash) {
       ),
       requestsToday: requestsToday(db),
       maxRequestsPerDay: config.maxRequestsPerDay,
+      reaction: reactionTime(db),
     },
     health: {
       // .env is read once at startup, so "did my edit take effect?" is only

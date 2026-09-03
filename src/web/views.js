@@ -235,6 +235,24 @@ function capacityNoteHtml(cap, timezone) {
   const short = cap.shortfall;
   const bang = `<span class="bang" title="Your window is longer than the API can sustain">!</span>`;
 
+  // Reaction time first: it is the number that says whether the poll interval
+  // is worth arguing about. Recomputed from the measured floor every render, so
+  // it follows POLL_INTERVAL_SECONDS rather than being written down anywhere.
+  const r = cap.reaction;
+  const secs = (n) => `${n < 10 ? n.toFixed(1) : n.toFixed(0)}s`;
+  const reaction =
+    r?.expectedSeconds === null || r?.expectedSeconds === undefined
+      ? `<p style="margin:0 0 .5rem">Reaction time: no posts read yet, so there is nothing measured to
+           base an estimate on.</p>`
+      : `<p style="margin:0 0 .5rem">
+          A lesson posted now would be seen in about <strong>${esc(secs(r.expectedSeconds))}</strong>
+          at the current ${esc(cap.pollIntervalSeconds)}s interval.
+          <span style="color:var(--muted)">Roughly ${esc(secs(r.floorSeconds))} of that is X's own
+          indexing delay, which no poll rate can beat — the interval itself adds
+          ${esc(secs(cap.pollIntervalSeconds / 2))} on average. Measured from
+          ${esc(r.sampleSize)} post${r.sampleSize === 1 ? '' : 's'}.</span>
+        </p>`;
+
   const headline = cap.unlimited
     ? `At <strong>${esc(cap.pollIntervalSeconds)}s</strong> between polls, no X rate cap ever binds —
        the bot can poll <strong>continuously, ${hrs(24)}/day</strong>.`
@@ -291,6 +309,7 @@ function capacityNoteHtml(cap, timezone) {
 
   return `<div class="note ${short ? 'alert' : ''}">
     <h3>Polling capacity ${short ? bang : ''}</h3>
+    ${reaction}
     <p style="margin:0">${headline}</p>
     ${comparison}
     ${spend}

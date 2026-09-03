@@ -118,3 +118,31 @@ export function indexingDelaySeconds(typicalSeconds, pollIntervalSeconds) {
   if (typicalSeconds === null) return null;
   return typicalSeconds - pollIntervalSeconds / 2;
 }
+
+/**
+ * A better estimate of X's indexing delay: the FASTEST read we have ever done.
+ *
+ * A post that happens to go up a moment before a poll waits almost no time for
+ * us, so its lag is very nearly X's delay alone. That makes the minimum an
+ * estimate of the floor which does not depend on the poll interval at all —
+ * unlike deriving it from the median, which needs the interval that was in
+ * force when each post was read, something we do not record.
+ *
+ * Interval-independence is the point: it lets us project the reaction time for
+ * an interval we have never actually run.
+ */
+export function lagFloorSeconds(lagged) {
+  const prompt = lagged.filter((l) => l.lagMin <= LATE_MINUTES);
+  if (prompt.length === 0) return null;
+  return Math.max(0, Math.min(...prompt.map((l) => l.lagMin)) * 60);
+}
+
+/**
+ * Expected time from a lesson being posted to the bot acting on it, at a given
+ * poll interval: X's indexing delay plus, on average, half an interval of
+ * waiting for the next poll.
+ */
+export function expectedReactionSeconds(floorSeconds, pollIntervalSeconds) {
+  if (floorSeconds === null) return null;
+  return floorSeconds + pollIntervalSeconds / 2;
+}
