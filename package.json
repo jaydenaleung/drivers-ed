@@ -16,7 +16,8 @@
     "env-check": "node src/tools/env-check.js",
     "live-test": "node src/tools/live-test.js",
     "caps": "node src/tools/caps.js",
-    "diagnose": "node src/tools/diagnose.js"
+    "diagnose": "node src/tools/diagnose.js",
+    "posts": "node src/tools/posts.js"
   },
   "repository": {
     "type": "git",

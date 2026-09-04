@@ -9,6 +9,7 @@ import {
   lagFloorSeconds,
   expectedReactionSeconds,
   indexingDelaySeconds,
+  postIdToDate,
 } from '../src/diagnostics.js';
 
 const at = (iso) => new Date(iso);
@@ -180,4 +181,51 @@ test('going ten times slower costs far less than ten times the delay', () => {
   const slow = expectedReactionSeconds(11, 30);
   assert.ok(slow - fast < 14, `expected under 14s of difference, got ${(slow - fast).toFixed(1)}s`);
   assert.ok(slow < fast * 3, 'nowhere near ten times worse');
+});
+
+// ---------------------------------------------------------------------------
+// Post IDs carry their own publication time
+// ---------------------------------------------------------------------------
+
+test('a post ID decodes to the time it was published', () => {
+  // The six real @NeedhamDriving posts from 2 Sep 2026, verified against the
+  // created_at X returned for them.
+  const known = [
+    ['2095178936418238606', '2026-09-02T15:55:59.641Z'],
+    ['2095179445917130840', '2026-09-02T15:58:01.115Z'],
+    ['2095185262275858833', '2026-09-02T16:21:07.843Z'],
+    ['2095189996432924725', '2026-09-02T16:39:56.554Z'],
+    ['2095208922147704995', '2026-09-02T17:55:08.796Z'],
+    ['2095209955867423016', '2026-09-02T17:59:15.254Z'],
+  ];
+  for (const [id, iso] of known) {
+    assert.equal(postIdToDate(id).toISOString(), iso, `id ${id}`);
+  }
+});
+
+test('post IDs must be shifted as BigInt, not with a JS bitwise operator', () => {
+  // The trap: `>>` coerces its operand to a 32-bit int, so shifting a post ID
+  // with it does not merely lose precision — it produces nonsense. These IDs
+  // are also past Number.MAX_SAFE_INTEGER, hence BigInt throughout.
+  const id = '2095178936418238606';
+  assert.ok(Number(id) > Number.MAX_SAFE_INTEGER);
+
+  const broken = new Date((Number(id) >> 22) + 1288834974657);
+  assert.equal(broken.getUTCFullYear(), 2010, 'the 32-bit shift collapses to the epoch');
+  assert.equal(postIdToDate(id).getUTCFullYear(), 2026);
+});
+
+test('consecutive IDs decode to distinct milliseconds', () => {
+  // One millisecond apart is 2^22 in the ID. If precision were being lost this
+  // would collapse to a single instant.
+  const base = 2095178936418238606n;
+  const a = postIdToDate(String(base));
+  const b = postIdToDate(String(base + (1n << 22n)));
+  assert.equal(b - a, 1, 'exactly one millisecond apart');
+});
+
+test('a malformed id yields null rather than a plausible wrong date', () => {
+  for (const bad of ['', null, undefined, 'abc', '12.5', '-1', '0']) {
+    assert.equal(postIdToDate(bad), null, `input ${JSON.stringify(bad)}`);
+  }
 });

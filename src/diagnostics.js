@@ -18,6 +18,34 @@
 /** Minutes after publication beyond which a post counts as read late. */
 export const LATE_MINUTES = 30;
 
+/**
+ * X's snowflake epoch: 2010-11-04T01:42:54.657Z, in milliseconds.
+ * Post IDs encode their own creation time in the upper bits.
+ */
+const SNOWFLAKE_EPOCH = 1288834974657n;
+
+/**
+ * Recovers the publication time from a post ID alone.
+ *
+ * Useful as a fallback when `created_at` was not stored, and as an independent
+ * check on it: the ID cannot disagree with itself. IDs are numeric strings well
+ * past Number.MAX_SAFE_INTEGER, so this must go through BigInt — parsing one as
+ * a Number silently rounds it and shifts the timestamp.
+ */
+export function postIdToDate(id) {
+  if (!/^\d+$/.test(String(id ?? ''))) return null;
+  try {
+    const raw = BigInt(id);
+    // "0" parses fine and decodes to the epoch itself — a real-looking date for
+    // an id that is not a post. Reject anything that carries no timestamp bits.
+    if (raw >> 22n <= 0n) return null;
+    const d = new Date(Number((raw >> 22n) + SNOWFLAKE_EPOCH));
+    return Number.isNaN(d.getTime()) ? null : d;
+  } catch {
+    return null;
+  }
+}
+
 const hoursBetween = (a, b) => (b - a) / 3600000;
 
 /**
