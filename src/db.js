@@ -69,7 +69,8 @@ CREATE TABLE IF NOT EXISTS posts_seen (
   posted_at  TEXT,
   fetched_at TEXT NOT NULL DEFAULT (datetime('now')),
   parser     TEXT,
-  parsed     TEXT
+  parsed     TEXT,
+  poll_interval_seconds INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS lessons (
@@ -150,6 +151,10 @@ const MIGRATIONS = [
   ['settings', 'active_window_enabled', "INTEGER NOT NULL DEFAULT 0"],
   ['settings', 'active_start', "TEXT NOT NULL DEFAULT '07:00'"],
   ['settings', 'active_end', "TEXT NOT NULL DEFAULT '21:00'"],
+  // The poll interval in force when this post was read. Without it, the
+  // measured lag cannot be decomposed into X's delay plus our waiting, because
+  // the correction depends on the interval AT THE TIME rather than now.
+  ['posts_seen', 'poll_interval_seconds', 'INTEGER'],
 ];
 
 function migrate(db) {

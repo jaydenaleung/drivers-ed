@@ -48,8 +48,11 @@ export async function ingestPost(db, post, depsOverride = {}) {
   // INSERT OR IGNORE is the dedupe: a post we have already handled is a no-op,
   // even if the poller hands it to us twice.
   const inserted = db
-    .prepare('INSERT OR IGNORE INTO posts_seen (post_id, post_text, posted_at) VALUES (?, ?, ?)')
-    .run(post.id, post.text, post.created_at ?? null);
+    .prepare(
+      `INSERT OR IGNORE INTO posts_seen (post_id, post_text, posted_at, poll_interval_seconds)
+       VALUES (?, ?, ?, ?)`,
+    )
+    .run(post.id, post.text, post.created_at ?? null, config.pollIntervalSeconds);
 
   if (inserted.changes === 0) {
     return { status: 'duplicate_post' };
@@ -187,12 +190,25 @@ export function applyClaimNotice(db, parsed, fallbackDate) {
 
   const claimable = "status IN ('open', 'skipped_no_match')";
 
+  // Keep the reason WE decided not to claim it, if we had already decided one.
+  //
+  // status and skip_reason answer different questions. The status is a fact
+  // about the lesson — the school gave it away. skip_reason answers the
+  // dashboard's actual column heading, "why not claimed", which is about our
+  // decision. Overwriting one with the other told Jayden the school had taken
+  // lessons that were never candidates: they were in towns he had not selected,
+  // and had already been skipped as wrong_area before any notice arrived. The
+  // school then claims the whole date, and every one of those rows gets
+  // relabelled. Only a lesson with no recorded reason — one we never got to —
+  // is genuinely unclaimed *because* the school took it.
+  const keepOurReason = `CASE WHEN skip_reason IS NULL THEN ? ELSE skip_reason END`;
+
   if (parsed.is_blanket_claim || !parsed.start_time) {
     const info = db
       .prepare(
         `UPDATE lessons
             SET status = 'claimed_by_school',
-                skip_reason = ?,
+                skip_reason = ${keepOurReason},
                 updated_at = datetime('now')
           WHERE lesson_date = ? AND ${claimable}`,
       )
@@ -211,7 +227,9 @@ export function applyClaimNotice(db, parsed, fallbackDate) {
   let changed = 0;
 
   const flip = db.prepare(
-    `UPDATE lessons SET status = 'claimed_by_school', skip_reason = ?, updated_at = datetime('now') WHERE id = ?`,
+    `UPDATE lessons SET status = 'claimed_by_school', skip_reason = ${keepOurReason},
+            updated_at = datetime('now')
+      WHERE id = ?`,
   );
 
   for (const row of candidates) {

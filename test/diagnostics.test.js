@@ -6,7 +6,9 @@ import {
   buildActivity,
   classifyAftermath,
   typicalLagSeconds,
-  lagFloorSeconds,
+  averageLagSeconds,
+  averageIndexingSeconds,
+  rejectOutliers,
   expectedReactionSeconds,
   indexingDelaySeconds,
   postIdToDate,
@@ -148,22 +150,8 @@ test('indexing delay subtracts half the poll interval', () => {
 // Reaction time, projected for any interval
 // ---------------------------------------------------------------------------
 
-test('the lag floor is the fastest read, independent of the poll interval', () => {
-  // A post that goes up moments before a poll waits almost nothing for us, so
-  // its lag is very nearly X's indexing delay on its own.
-  const lagged = [post('2026-09-02T04:00:00Z', 0.35), post('2026-09-02T05:00:00Z', 0.2), post('2026-09-02T06:00:00Z', 0.5)];
-  assert.equal(lagFloorSeconds(lagged), 12, 'the minimum prompt lag, in seconds');
-});
 
-test('the floor ignores late reads entirely', () => {
-  const lagged = [post('2026-09-02T04:00:00Z', 0.2), post('2026-09-02T15:00:00Z', 480)];
-  assert.equal(lagFloorSeconds(lagged), 12);
-});
 
-test('the floor is null with nothing measured', () => {
-  assert.equal(lagFloorSeconds([]), null);
-  assert.equal(lagFloorSeconds([post('2026-09-02T15:00:00Z', 480)]), null);
-});
 
 test('reaction time follows the interval without re-measuring', () => {
   // The whole point: an 11s floor projects to any interval, including ones
@@ -228,4 +216,111 @@ test('a malformed id yields null rather than a plausible wrong date', () => {
   for (const bad of ['', null, undefined, 'abc', '12.5', '-1', '0']) {
     assert.equal(postIdToDate(bad), null, `input ${JSON.stringify(bad)}`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Average lag: recent, and not dragged around by one bad reading
+// ---------------------------------------------------------------------------
+
+/** A read `lagSeconds` after publication, seen at `order` (higher = newer). */
+function read(lagSeconds, order = 0) {
+  return { seen: new Date(2026, 8, 3, 12, 0, order), lagMin: lagSeconds / 60 };
+}
+
+test('a single slow read does not drag the average', () => {
+  // The exact complaint: an 8-minute reading among 12-second ones was being
+  // averaged in, because the old cutoff only excluded lags above 30 minutes.
+  const reads = [read(11), read(12), read(12), read(13), read(14), read(12), read(13), read(480)];
+  const avg = averageLagSeconds(reads);
+
+  assert.equal(avg.excluded, 1, 'the 8-minute read is an outlier among 12-second ones');
+  assert.equal(avg.used, 7);
+  assert.ok(avg.averageSeconds > 11 && avg.averageSeconds < 13, `got ${avg.averageSeconds}`);
+});
+
+test('an outage-length lag is discarded too', () => {
+  const reads = [read(11), read(12), read(12), read(13), read(14), read(26280)];
+  const avg = averageLagSeconds(reads);
+  assert.equal(avg.excluded, 1);
+  assert.ok(avg.averageSeconds < 13);
+});
+
+test('the average is taken over the most recent posts only', () => {
+  // 50 recent reads at ~12s, plus older ones at 40s that must fall outside the
+  // window. A lifetime average would still be carrying the old behaviour.
+  const recent = Array.from({ length: 50 }, (_, i) => read(12, 100 + i));
+  const older = Array.from({ length: 30 }, (_, i) => read(40, i));
+
+  const avg = averageLagSeconds([...older, ...recent], 50);
+  assert.equal(avg.considered, 50);
+  assert.equal(avg.averageSeconds, 12, 'the older, slower era is out of the window');
+});
+
+test('near-identical readings are not pruned to nothing', () => {
+  // With an interquartile range of zero, a bare 1.5xIQR fence would reject
+  // every value that is not exactly the median.
+  const reads = [read(12), read(12), read(12), read(12), read(13)];
+  const avg = averageLagSeconds(reads);
+  assert.equal(avg.excluded, 0);
+  assert.equal(avg.used, 5);
+});
+
+test('too few readings to judge means nothing is discarded', () => {
+  const { kept, excluded } = rejectOutliers([12, 480, 13]);
+  assert.equal(excluded.length, 0, 'three points cannot establish quartiles');
+  assert.equal(kept.length, 3);
+});
+
+test('outlier rejection is symmetric', () => {
+  const { excluded } = rejectOutliers([12, 12, 13, 12, 13, 12, 0.01, 480]);
+  assert.ok(excluded.includes(480));
+  assert.ok(excluded.includes(0.01), 'an impossibly fast read is as suspect as a slow one');
+});
+
+test('no posts means no average rather than a zero', () => {
+  const avg = averageLagSeconds([]);
+  assert.equal(avg.averageSeconds, null);
+  assert.equal(avg.used, 0);
+});
+
+test('the average rounds to one decimal place cleanly', () => {
+  const reads = [read(11), read(12), read(12), read(13)];
+  const avg = averageLagSeconds(reads);
+  assert.equal(avg.averageSeconds.toFixed(1), '12.0');
+});
+
+test('the indexing delay is corrected per post, not by the current interval', () => {
+  // Posts read while polling every 3s: a 12s lag is ~10.5s of X plus ~1.5s of
+  // waiting. Switching to 30s must not retroactively reinterpret them —
+  // subtracting 15s from a 12s average went negative and was clamped to zero,
+  // reporting "0.0s of it is X's own indexing delay".
+  const reads = [11, 12, 12, 13, 14, 12].map((s, i) => ({
+    seen: new Date(2026, 8, 3, 12, 0, i),
+    lagMin: s / 60,
+    pollIntervalSeconds: 3,
+  }));
+
+  const indexing = averageIndexingSeconds(reads, 50, 30);
+  assert.ok(indexing > 9 && indexing < 12, `expected ~10.5s of X delay, got ${indexing}`);
+
+  // And the projection to the new interval stays sensible.
+  assert.ok(expectedReactionSeconds(indexing, 30) > 24);
+});
+
+test('posts recorded before the interval column fall back sensibly', () => {
+  const reads = [12, 12, 13, 12].map((s, i) => ({
+    seen: new Date(2026, 8, 3, 12, 0, i),
+    lagMin: s / 60,
+  }));
+  assert.ok(Math.abs(averageIndexingSeconds(reads, 50, 3) - 10.75) < 0.3);
+});
+
+test('a mixed history uses each post\'s own interval', () => {
+  const reads = [
+    ...[12, 12, 13].map((s, i) => ({ seen: new Date(2026, 8, 3, 12, 0, i), lagMin: s / 60, pollIntervalSeconds: 3 })),
+    ...[26, 25, 27].map((s, i) => ({ seen: new Date(2026, 8, 3, 12, 1, i), lagMin: s / 60, pollIntervalSeconds: 30 })),
+  ];
+  // Both eras imply roughly the same ~11s of X delay despite very different lags.
+  const indexing = averageIndexingSeconds(reads, 50, 3);
+  assert.ok(indexing > 9.5 && indexing < 12, `got ${indexing}`);
 });

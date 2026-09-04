@@ -147,22 +147,113 @@ export function indexingDelaySeconds(typicalSeconds, pollIntervalSeconds) {
   return typicalSeconds - pollIntervalSeconds / 2;
 }
 
+/** Linear-interpolated quantile of an ascending array. */
+function quantile(sorted, q) {
+  if (sorted.length === 1) return sorted[0];
+  const pos = (sorted.length - 1) * q;
+  const base = Math.floor(pos);
+  const rest = pos - base;
+  const next = sorted[base + 1];
+  return next === undefined ? sorted[base] : sorted[base] + rest * (next - sorted[base]);
+}
+
 /**
- * A better estimate of X's indexing delay: the FASTEST read we have ever done.
+ * Discards outliers by Tukey's fences: anything more than 1.5 interquartile
+ * ranges outside the quartiles.
  *
- * A post that happens to go up a moment before a poll waits almost no time for
- * us, so its lag is very nearly X's delay alone. That makes the minimum an
- * estimate of the floor which does not depend on the poll interval at all —
- * unlike deriving it from the median, which needs the interval that was in
- * force when each post was read, something we do not record.
+ * A fixed cutoff cannot do this job. The old code treated anything under 30
+ * minutes as a normal read, which kept an 8-minute lag in the average and
+ * dragged a 12-second figure into the tens of seconds. Quartiles adapt to
+ * whatever the data actually looks like, so an 8-minute reading is an outlier
+ * among 12-second ones without anybody choosing a threshold.
  *
- * Interval-independence is the point: it lets us project the reaction time for
- * an interval we have never actually run.
+ * The fence has a floor of 2 seconds because measurements this tight can have
+ * an interquartile range near zero, and 1.5 x 0 would reject every value that
+ * is not exactly the median.
  */
-export function lagFloorSeconds(lagged) {
-  const prompt = lagged.filter((l) => l.lagMin <= LATE_MINUTES);
-  if (prompt.length === 0) return null;
-  return Math.max(0, Math.min(...prompt.map((l) => l.lagMin)) * 60);
+export function outlierFences(values) {
+  // Under four points the quartiles are not meaningful, so nothing is rejected.
+  if (values.length < 4) return null;
+
+  const sorted = [...values].sort((a, b) => a - b);
+  const q1 = quantile(sorted, 0.25);
+  const q3 = quantile(sorted, 0.75);
+  const fence = Math.max(1.5 * (q3 - q1), 2);
+  return { lo: q1 - fence, hi: q3 + fence };
+}
+
+export function rejectOutliers(values) {
+  const fences = outlierFences(values);
+  if (!fences) return { kept: [...values], excluded: [] };
+
+  const kept = [];
+  const excluded = [];
+  for (const v of values) {
+    if (v < fences.lo || v > fences.hi) excluded.push(v);
+    else kept.push(v);
+  }
+  return { kept, excluded };
+}
+
+/**
+ * The most recent readings, with outliers removed — as whole entries, so the
+ * caller keeps whatever else each one carries.
+ */
+export function trimmedRecent(lagged, sample = 50) {
+  const recent = [...lagged].sort((a, b) => b.seen - a.seen).slice(0, sample);
+  if (recent.length === 0) return { kept: [], excluded: 0, considered: 0 };
+
+  const fences = outlierFences(recent.map((l) => l.lagMin * 60));
+  if (!fences) return { kept: recent, excluded: 0, considered: recent.length };
+
+  const kept = recent.filter((l) => {
+    const s = l.lagMin * 60;
+    return s >= fences.lo && s <= fences.hi;
+  });
+  return { kept, excluded: recent.length - kept.length, considered: recent.length };
+}
+
+/**
+ * Average lag over the most recent posts, with outliers discarded.
+ *
+ * The sample is bounded so the figure describes how the bot behaves NOW: a
+ * lifetime average would still be carrying the 2 Sep outage months later, and a
+ * change to the poll interval would take forever to show up.
+ *
+ * @param {Array<{seen: Date, lagMin: number}>} lagged
+ * @param {number} sample how many of the most recent posts to consider
+ */
+export function averageLagSeconds(lagged, sample = 50) {
+  const { kept, excluded, considered } = trimmedRecent(lagged, sample);
+  if (kept.length === 0) {
+    return { averageSeconds: null, used: 0, excluded, considered };
+  }
+
+  const total = kept.reduce((sum, l) => sum + l.lagMin * 60, 0);
+  return { averageSeconds: total / kept.length, used: kept.length, excluded, considered };
+}
+
+/**
+ * X's own indexing delay, averaged over the same trimmed sample.
+ *
+ * Each reading is corrected by the interval that was actually in force when
+ * THAT post was read, not by whatever the interval happens to be now. Using the
+ * current one produced a visible absurdity: an average measured at 3s, minus
+ * half of a newly-set 30s interval, came out negative and was clamped to "0.0s
+ * of it is X's own indexing delay". Recording the interval per post is what
+ * makes the projection valid across a change.
+ *
+ * `fallbackInterval` covers rows written before the interval was recorded.
+ */
+export function averageIndexingSeconds(lagged, sample = 50, fallbackInterval = 0) {
+  const { kept } = trimmedRecent(lagged, sample);
+  if (kept.length === 0) return null;
+
+  const total = kept.reduce((sum, l) => {
+    const interval = Number.isFinite(l.pollIntervalSeconds) ? l.pollIntervalSeconds : fallbackInterval;
+    return sum + (l.lagMin * 60 - interval / 2);
+  }, 0);
+  return Math.max(0, total / kept.length);
 }
 
 /**

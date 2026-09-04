@@ -12,7 +12,7 @@
  */
 import { config } from '../config.js';
 import { openDatabase } from '../db.js';
-import { postIdToDate, LATE_MINUTES } from '../diagnostics.js';
+import { postIdToDate, LATE_MINUTES, averageLagSeconds } from '../diagnostics.js';
 
 const argv = process.argv.slice(2);
 const flag = (name) => argv.includes(`--${name}`);
@@ -171,6 +171,19 @@ if (FULL) {
     );
   }
   console.log('\n  --full for complete text and post IDs, --json to pipe elsewhere.');
+}
+
+// The same average the dashboard shows, computed the same way, so the two
+// never disagree: last 50 posts, outliers discarded by quartile.
+const avg = averageLagSeconds(
+  records.filter((r) => r.published && r.fetched).map((r) => ({ seen: r.fetched, lagMin: r.lag_seconds / 60 })),
+  50,
+);
+if (avg.averageSeconds !== null) {
+  console.log(
+    `\n  Average lag over the last ${avg.considered} post(s): ${avg.averageSeconds.toFixed(1)}s` +
+      (avg.excluded ? ` (${avg.excluded} outlier${avg.excluded === 1 ? '' : 's'} discarded)` : ''),
+  );
 }
 
 // A post read long after publication is a period the bot was not watching.

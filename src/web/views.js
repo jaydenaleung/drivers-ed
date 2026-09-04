@@ -98,10 +98,51 @@ export function loginPage({ error } = {}) {
   );
 }
 
+/**
+ * A stored UTC timestamp rendered in the dashboard's timezone, with the zone
+ * named: "2026-09-03 15:15:33 (EDT)".
+ *
+ * The abbreviation is derived per timestamp rather than fixed, because it
+ * changes with daylight saving — the same clock is EDT in September and EST in
+ * January, and a hardcoded label would be wrong for half the year and, worse,
+ * wrong about times in the past when read back later.
+ *
+ * SQLite writes "YYYY-MM-DD HH:MM:SS" with no zone marker; it is UTC, and
+ * saying so explicitly is what stops the browser reading it as local.
+ */
+function fmtLocal(value, timezone, { dateFirst = true } = {}) {
+  if (!value) return null;
+  const d = new Date(/[TZ]/.test(value) ? value : `${value.replace(' ', 'T')}Z`);
+  if (Number.isNaN(d.getTime())) return null;
+
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+    timeZoneName: 'short',
+  }).formatToParts(d);
+
+  const get = (type) => parts.find((p) => p.type === type)?.value ?? '';
+  const date = `${get('year')}-${get('month')}-${get('day')}`;
+  const time = `${get('hour')}:${get('minute')}:${get('second')}`;
+  const zone = get('timeZoneName');
+
+  return `${dateFirst ? `${date} ` : ''}${time} (${zone})`;
+}
+
 /** Human-friendly "3 minutes ago" for the last-poll indicator. */
 function ago(isoString) {
   if (!isoString) return null;
-  const then = new Date(isoString);
+  // Same normalisation as fmtLocal: a bare "YYYY-MM-DD HH:MM:SS" from SQLite is
+  // UTC, but `new Date` reads that shape as LOCAL time. On a UTC server the two
+  // agree and the bug is invisible; anywhere else every "ago" is off by the
+  // offset.
+  const then = new Date(/[TZ]/.test(isoString) ? isoString : `${isoString.replace(' ', 'T')}Z`);
   if (Number.isNaN(then.getTime())) return null;
   const secs = Math.floor((Date.now() - then.getTime()) / 1000);
   if (secs < 5) return 'just now';
@@ -239,7 +280,7 @@ function capacityNoteHtml(cap, timezone) {
   // is worth arguing about. Recomputed from the measured floor every render, so
   // it follows POLL_INTERVAL_SECONDS rather than being written down anywhere.
   const r = cap.reaction;
-  const secs = (n) => `${n < 10 ? n.toFixed(1) : n.toFixed(0)}s`;
+  const secs = (n) => `${n.toFixed(1)}s`;
   const reaction =
     r?.expectedSeconds === null || r?.expectedSeconds === undefined
       ? `<p style="margin:0 0 .5rem">Reaction time: no posts read yet, so there is nothing measured to
@@ -247,10 +288,14 @@ function capacityNoteHtml(cap, timezone) {
       : `<p style="margin:0 0 .5rem">
           A lesson posted now would be seen in about <strong>${esc(secs(r.expectedSeconds))}</strong>
           at the current ${esc(cap.pollIntervalSeconds)}s interval.
-          <span style="color:var(--muted)">Roughly ${esc(secs(r.floorSeconds))} of that is X's own
-          indexing delay, which no poll rate can beat — the interval itself adds
-          ${esc(secs(cap.pollIntervalSeconds / 2))} on average. Measured from
-          ${esc(r.sampleSize)} post${r.sampleSize === 1 ? '' : 's'}.</span>
+          <span style="color:var(--muted)">Averaged over the last
+          ${esc(r.consideredSize ?? r.sampleSize)} post${(r.consideredSize ?? r.sampleSize) === 1 ? '' : 's'}${
+            r.excludedCount
+              ? `, discarding ${esc(r.excludedCount)} outlier${r.excludedCount === 1 ? '' : 's'}`
+              : ''
+          }. Roughly ${esc(secs(r.floorSeconds))} of it is X's own indexing delay, which no poll
+          rate can beat — the interval itself adds ${esc(secs(cap.pollIntervalSeconds / 2))} on
+          average.</span>
         </p>`;
 
   const headline = cap.unlimited
@@ -404,7 +449,7 @@ function timeCell(lesson) {
   return `${esc(lesson.start_time)}${end}`;
 }
 
-function claimedTable(rows) {
+function claimedTable(rows, timezone) {
   if (!rows.length) return `<p class="empty">Nothing claimed yet.</p>`;
   return `<div class="scroll-y"><table>
     <thead><tr><th>Date</th><th>Time</th><th>Areas</th><th>Email sent</th></tr></thead>
@@ -414,36 +459,65 @@ function claimedTable(rows) {
           <td>${esc(l.lesson_date)}</td>
           <td>${timeCell(l)}</td>
           <td>${esc(l.areas.join(', '))}</td>
-          <td>${esc(l.email_sent_at ?? '—')} <span class="pill">${esc(ago(l.email_sent_at) ?? '')}</span></td>
+          <td>${esc(fmtLocal(l.email_sent_at, timezone) ?? '—')}
+              <span class="pill">${esc(ago(l.email_sent_at) ?? '')}</span></td>
         </tr>`,
       )
       .join('')}</tbody></table></div>`;
 }
 
-function skippedTable(rows) {
+/**
+ * Why a lesson was not claimed, keeping our decision distinct from what the
+ * school later did with it.
+ *
+ * A lesson skipped for being in the wrong town and *then* claimed by the school
+ * has two true facts attached. The column asks why WE did not claim it, so our
+ * reason leads; the school's action is a footnote, not a replacement for it.
+ */
+function reasonCell(l) {
+  const label = SKIP_REASON_LABELS[l.skip_reason] ?? l.skip_reason ?? l.status;
+  const schoolTookIt = l.status === 'claimed_by_school' && l.skip_reason !== 'already_claimed';
+
+  return `<span class="pill">${esc(label)}</span>${
+    schoolTookIt
+      ? ` <span class="sub" style="margin:0">· school claimed it later</span>`
+      : ''
+  }`;
+}
+
+function skippedTable(rows, timezone) {
   if (!rows.length) return `<p class="empty">Nothing skipped.</p>`;
   return `<div class="scroll-y"><table>
-    <thead><tr><th>Date</th><th>Time</th><th>Areas</th><th>Why not claimed</th></tr></thead>
+    <thead><tr>
+      <th>Date</th><th>Time</th><th>Areas</th>
+      <th>Why not claimed</th><th>Email sent</th><th>Decided</th>
+    </tr></thead>
     <tbody>${rows
       .map(
         (l) => `<tr>
           <td>${esc(l.lesson_date)}</td>
           <td>${timeCell(l)}</td>
           <td>${esc(l.areas.join(', '))}</td>
-          <td><span class="pill">${esc(SKIP_REASON_LABELS[l.skip_reason] ?? l.skip_reason ?? l.status)}</span></td>
+          <td>${reasonCell(l)}</td>
+          <td>${
+            l.email_sent_at
+              ? esc(fmtLocal(l.email_sent_at, timezone))
+              : '<span class="sub" style="margin:0">none</span>'
+          }</td>
+          <td>${esc(fmtLocal(l.updated_at, timezone) ?? '—')}</td>
         </tr>`,
       )
       .join('')}</tbody></table></div>`;
 }
 
-function errorTable(rows) {
+function errorTable(rows, timezone) {
   if (!rows.length) return `<p class="empty">No errors. </p>`;
   return `<div class="scroll-y"><table>
     <thead><tr><th>When</th><th>Stage</th><th>Message</th></tr></thead>
     <tbody>${rows
       .map(
         (e) => `<tr>
-          <td>${esc(e.occurred_at)}</td>
+          <td>${esc(fmtLocal(e.occurred_at, timezone) ?? e.occurred_at)}</td>
           <td><span class="pill">${esc(e.stage)}</span></td>
           <td>${esc(e.message)}
             ${e.raw_context ? `<details><summary>context</summary><pre>${esc(e.raw_context)}</pre></details>` : ''}
@@ -482,7 +556,7 @@ export function dashboardPage(model) {
        <p class="sub" style="margin:-.4rem 0 .8rem">
          This means the claim email was sent, not that the school assigned you the lesson.
        </p>
-       ${claimedTable(claimed)}
+       ${claimedTable(claimed, health.timezone)}
        ${
          claimed.length
            ? `<div class="rowactions">
@@ -505,7 +579,7 @@ export function dashboardPage(model) {
          towns is then treated as brand new and can be claimed — useful for wiping test data so
          it cannot shadow a real lesson.
        </p>
-       ${skippedTable(skipped)}
+       ${skippedTable(skipped, health.timezone)}
        ${
          skipped.length
            ? `<div class="rowactions">
@@ -520,7 +594,7 @@ export function dashboardPage(model) {
 
      <div class="card">
        <h2>Errors (${errors.length})</h2>
-       ${errorTable(errors)}
+       ${errorTable(errors, health.timezone)}
        <p style="margin-top:1rem;display:flex;gap:.6rem;flex-wrap:wrap">
          <form method="post" action="/errors/clear"><button class="secondary" type="submit">Clear errors</button></form>
          <form method="post" action="/test-notification"><button class="secondary" type="submit">Send test phone notification</button></form>
