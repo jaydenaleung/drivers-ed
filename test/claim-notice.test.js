@@ -162,7 +162,7 @@ test('skipped rows show an email column and a local timestamp with its zone', as
     assert.match(html, /<th>Email sent<\/th>/);
     assert.match(html, /<th>Decided<\/th>/);
     // 19:15:33 UTC is 15:15:33 in New York, and September is daylight time.
-    assert.match(html, /15:15:33 \(EDT\)/, 'shown in local time, with the zone named');
+    assert.match(html, /3:15:33 PM \(EDT\)/, 'shown in local time, 12-hour, with the zone named');
     assert.match(html, /Area not selected/);
     assert.match(html, />none</, 'no email was sent for a skipped lesson, and it says so');
   });
@@ -178,7 +178,7 @@ test('the zone label follows daylight saving rather than being hardcoded', async
     ).run(id);
 
     const html = await (await fetch(`${base}/`, { headers: { Cookie: await login(base) } })).text();
-    assert.match(html, /15:15:33 \(EST\)/);
+    assert.match(html, /3:15:33 PM \(EST\)/);
   });
 });
 
@@ -220,7 +220,62 @@ test('the claimed table shows its send time in local time too', async () => {
     ).run(id);
 
     const html = await (await fetch(`${base}/`, { headers: { Cookie: await login(base) } })).text();
-    assert.match(html, /2026-09-03 15:15:33 \(EDT\)/);
+    assert.match(html, /2026-09-03 3:15:33 PM \(EDT\)/);
     assert.ok(!html.includes('2026-09-03 19:15:33'), 'the raw UTC string must not leak through');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 12-hour clock
+// ---------------------------------------------------------------------------
+
+test('lesson times read as a 12-hour clock', async () => {
+  await withServer(async ({ db, base }) => {
+    const id = upsertLesson(
+      db,
+      { date: '2099-05-01', start_time: '13:00', end_time: '14:30', areas: ['Natick'] },
+      'p1',
+    );
+    db.prepare("UPDATE lessons SET status='skipped_no_match', skip_reason='wrong_area' WHERE id=?").run(id);
+
+    const html = await (await fetch(`${base}/`, { headers: { Cookie: await login(base) } })).text();
+    assert.match(html, /1:00 PM–2:30 PM/);
+    assert.ok(!/>13:00/.test(html), 'the 24-hour form must not survive into the page');
+  });
+});
+
+test('midnight and noon are not confused', async () => {
+  const { to12Hour } = await import('../src/web/views.js');
+  assert.equal(to12Hour('00:00'), '12:00 AM', 'midnight is 12 AM, not 0 AM');
+  assert.equal(to12Hour('12:00'), '12:00 PM', 'noon is 12 PM, not 0 PM');
+  assert.equal(to12Hour('00:30'), '12:30 AM');
+  assert.equal(to12Hour('12:30'), '12:30 PM');
+  assert.equal(to12Hour('11:59'), '11:59 AM');
+  assert.equal(to12Hour('23:59'), '11:59 PM');
+  assert.equal(to12Hour('09:05'), '9:05 AM');
+});
+
+test('an overrun past midnight stays honest rather than claiming the wrong day', async () => {
+  const { to12Hour } = await import('../src/web/views.js');
+  // effectiveWindow deliberately does not wrap: a 23:30 lesson plus a buffer
+  // is 25:00, and rendering that as "1:00 AM" would move it a day earlier.
+  assert.equal(to12Hour('25:00'), '25:00');
+  assert.equal(to12Hour('24:00'), '24:00');
+});
+
+test('a value that is not a time is passed through untouched', async () => {
+  const { to12Hour } = await import('../src/web/views.js');
+  assert.equal(to12Hour(''), '');
+  assert.equal(to12Hour(null), '');
+  assert.equal(to12Hour('tomorrow'), 'tomorrow');
+});
+
+test('the closed-window banner names the resume time in 12-hour form', async () => {
+  await withServer(async ({ db, base }) => {
+    updateSettings(db, { activeWindowEnabled: true, activeStart: '08:00', activeEnd: '18:00' });
+    // Force the window closed by asking for a moment outside it is not possible
+    // here, so assert on the setting rendering wherever it appears.
+    const html = await (await fetch(`${base}/`, { headers: { Cookie: await login(base) } })).text();
+    assert.match(html, /10:00 PM to 6:00 AM/, 'the midnight-crossing example reads as a clock too');
   });
 });

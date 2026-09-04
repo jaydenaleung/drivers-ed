@@ -100,7 +100,7 @@ export function loginPage({ error } = {}) {
 
 /**
  * A stored UTC timestamp rendered in the dashboard's timezone, with the zone
- * named: "2026-09-03 15:15:33 (EDT)".
+ * named: "2026-09-03 3:15:33 PM (EDT)".
  *
  * The abbreviation is derived per timestamp rather than fixed, because it
  * changes with daylight saving — the same clock is EDT in September and EST in
@@ -115,24 +115,49 @@ function fmtLocal(value, timezone, { dateFirst = true } = {}) {
   const d = new Date(/[TZ]/.test(value) ? value : `${value.replace(' ', 'T')}Z`);
   if (Number.isNaN(d.getTime())) return null;
 
-  const parts = new Intl.DateTimeFormat('en-CA', {
+  const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: timezone,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
-    hour: '2-digit',
+    hour: 'numeric',
     minute: '2-digit',
     second: '2-digit',
-    hour12: false,
+    hour12: true,
     timeZoneName: 'short',
   }).formatToParts(d);
 
   const get = (type) => parts.find((p) => p.type === type)?.value ?? '';
+  // Parts are assembled by hand rather than taking the locale's own ordering,
+  // so the date stays ISO-ordered (sortable, unambiguous) while the clock reads
+  // the way people say it.
   const date = `${get('year')}-${get('month')}-${get('day')}`;
-  const time = `${get('hour')}:${get('minute')}:${get('second')}`;
+  const time = `${get('hour')}:${get('minute')}:${get('second')} ${get('dayPeriod')}`;
   const zone = get('timeZoneName');
 
   return `${dateFirst ? `${date} ` : ''}${time} (${zone})`;
+}
+
+/**
+ * "13:00" as it is spoken: "1:00 PM".
+ *
+ * Lesson times are stored as 24-hour HH:MM because that sorts and compares
+ * correctly, and the <input type="time"> fields need that format. Only the
+ * reading is converted.
+ *
+ * An hour of 24 or more is left alone: the overrun window can legitimately run
+ * past midnight (a 23:30 lesson plus a buffer), and "25:00" is honest where
+ * "1:00 AM" would silently claim the wrong day.
+ */
+export function to12Hour(hhmm) {
+  const m = /^(\d{1,2}):([0-5]\d)$/.exec(String(hhmm ?? ''));
+  if (!m) return hhmm ?? '';
+
+  const hour24 = Number(m[1]);
+  if (hour24 >= 24) return hhmm;
+
+  const period = hour24 >= 12 ? 'PM' : 'AM';
+  return `${hour24 % 12 || 12}:${m[2]} ${period}`;
 }
 
 /** Human-friendly "3 minutes ago" for the last-poll indicator. */
@@ -227,7 +252,7 @@ function healthBanner({
   if (windowOpen === false) {
     parts.push(
       `<div class="banner warn">OUTSIDE ACTIVE HOURS — the bot is deliberately not polling X until
-        ${esc(activeStart)}. It will resume on its own; nothing is broken.${
+        ${esc(to12Hour(activeStart))}. It will resume on its own; nothing is broken.${
           lastPollAt ? ` Last poll ${esc(ago(lastPollAt))}.` : ''
         }</div>`,
     );
@@ -412,7 +437,7 @@ function settingsForm(settings, { saved, error }, capacity, timezone) {
       </div>
       <p class="sub indent" style="margin:.3rem 0 0">
         Outside these hours the bot does not call the X API at all, which is what conserves quota.
-        A window may cross midnight — 22:00 to 06:00 is eight hours.
+        A window may cross midnight — 10:00 PM to 6:00 AM is eight hours.
       </p>
 
       <label>Areas <span style="font-weight:400;color:var(--muted)">— a lesson matches if it mentions any one of these</span></label>
@@ -445,8 +470,8 @@ function settingsForm(settings, { saved, error }, capacity, timezone) {
 }
 
 function timeCell(lesson) {
-  const end = lesson.end_time ? `–${esc(lesson.end_time)}` : '';
-  return `${esc(lesson.start_time)}${end}`;
+  const end = lesson.end_time ? `–${esc(to12Hour(lesson.end_time))}` : '';
+  return `${esc(to12Hour(lesson.start_time))}${end}`;
 }
 
 function claimedTable(rows, timezone) {
@@ -537,7 +562,7 @@ export function dashboardPage(model) {
        health.pollIntervalSeconds,
      )}s · <a href="/logout">sign out</a></p>
      <p class="sub" style="margin-top:-.9rem">
-       Running since ${esc(health.startedAt?.replace('T', ' ').slice(0, 19) ?? 'unknown')} UTC
+       Running since ${esc(fmtLocal(health.startedAt, health.timezone) ?? 'unknown')}
        (${esc(ago(health.startedAt) ?? '')}) ·
        config from <code>${esc((health.configFiles ?? []).join(', ') || 'no .env found')}</code><br>
        <span style="opacity:.85">Editing that file changes nothing until you run
